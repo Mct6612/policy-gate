@@ -1,13 +1,18 @@
 # policy-gate
 
+[![CI](https://github.com/tobs-code/policy-gate/actions/workflows/ci.yml/badge.svg)](https://github.com/tobs-code/policy-gate/actions)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org)
+[![Safety](https://img.shields.io/badge/safety-experimental-yellow.svg)](SAFETY_MANUAL.md)
+
 Deterministic firewall for LLM applications, agents, and AI gateways.
 
 Instead of trying to guess whether a prompt is dangerous, `policy-gate` only permits explicitly allowlisted intents. Unknown, ambiguous, or policy-violating inputs fail closed.
 
 It is designed for teams that want predictable enforcement, auditable decisions, and a narrow control boundary around model access.
 
-**Status:** Under development. Not certified. Not for production use.  
-**Important:** This project borrows architectural ideas from functional safety engineering, but it is not an IEC 61508 implementation and makes no certification or compliance claims.
+**Status:** Experimental — under active development. Not certified for production use.  
+**Note:** This project borrows architectural ideas from functional safety engineering, but it is not an IEC 61508 implementation and makes no certification or compliance claims.
 
 ## At a glance
 
