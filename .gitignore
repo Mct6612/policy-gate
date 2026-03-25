@@ -10,6 +10,7 @@ simulated_audit.ndjson
 probing_verification.ndjson
 mnt/
 verification/.dataset_cache/
+fuzz/corpus/
 
 # Local docs / backups
 README-old.md
