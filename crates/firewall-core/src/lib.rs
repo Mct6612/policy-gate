@@ -175,6 +175,44 @@ pub fn evaluate(input: PromptInput, sequence: u64) -> Verdict {
     orchestrator::evaluate(input, sequence, now_ns)
 }
 
+/// Evaluate a batch of raw strings in parallel using Rayon.
+///
+/// This function is available when the `parallel` feature is enabled.
+/// It uses Rayon's parallel iterators to evaluate multiple prompts concurrently,
+/// which can significantly improve throughput for high-volume workloads.
+///
+/// Returns a vector of verdicts in the same order as the input.
+#[cfg(feature = "parallel")]
+pub fn evaluate_batch_parallel(raw_inputs: Vec<String>, start_sequence: u64) -> Vec<Verdict> {
+    use rayon::prelude::*;
+
+    if !is_initialised() {
+        return raw_inputs
+            .iter()
+            .enumerate()
+            .map(|(i, _)| uninitialised_block(start_sequence + i as u64, now_ns()))
+            .collect();
+    }
+
+    raw_inputs
+        .into_par_iter()
+        .enumerate()
+        .map(|(i, raw)| {
+            let sequence = start_sequence + i as u64;
+            let ingested_at_ns = now_ns();
+
+            if let Some(verdict) = pre_scan_block(&raw, sequence, ingested_at_ns, now_ns) {
+                return verdict;
+            }
+
+            match prompt_input_or_block(raw, sequence, ingested_at_ns, now_ns) {
+                Ok(input) => evaluate(input, sequence),
+                Err(verdict) => verdict,
+            }
+        })
+        .collect()
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn now_ns() -> u128 {

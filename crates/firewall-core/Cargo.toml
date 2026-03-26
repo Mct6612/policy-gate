@@ -16,6 +16,7 @@ license.workspace = true
 default = []
 fips = ["dep:aws-lc-rs"]
 semantic = ["dep:ort", "dep:ndarray"]
+parallel = ["dep:rayon"]
 
 [dependencies]
 serde = { workspace = true }
@@ -35,6 +36,8 @@ aws-lc-rs = { version = "1", optional = true }
 # --- Channel D: Semantic Analysis ---
 ort = { version = "2.0.0-rc.3", optional = true }
 ndarray = { version = "0.15", optional = true }
+# Parallel batch evaluation
+rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]
 # proptest for boundary condition fuzzing (Safety Action SA-005)

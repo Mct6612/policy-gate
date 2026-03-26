@@ -132,6 +132,55 @@ if not verdict["is_pass"]:
     raise RuntimeError(f"Blocked: {verdict['block_reason']}")
 ```
 
+## High-throughput workloads
+
+### Node.js (async / concurrent)
+
+The Node.js bindings use napi-rs, which automatically runs evaluations on worker threads:
+
+```ts
+import { Firewall } from "policy-gate";
+
+const firewall = await Firewall.create();
+
+// Concurrent evaluation - napi-rs handles parallelism automatically
+const prompts = [
+  "What is the capital of France?",
+  "Write a function",
+  "Hello!"
+];
+
+const results = await Promise.all(
+  prompts.map(p => firewall.evaluate(p))
+);
+```
+
+### Rust (parallel batch)
+
+Enable the `parallel` feature for batch evaluation with Rayon:
+
+```toml
+# Cargo.toml
+firewall-core = { path = "./crates/firewall-core", features = ["parallel"] }
+```
+
+```rust
+use firewall_core::evaluate_batch_parallel;
+
+let prompts = vec![
+    "What is the capital of France?".to_string(),
+    "Write a function".to_string(),
+];
+
+let results = evaluate_batch_parallel(prompts, 0);
+```
+
+### Performance
+
+Single-threaded: ~100 req/s (9-10ms per request)
+Parallel (Rayon): scales with CPU cores
+Node.js async: handled by napi-rs worker threads
+
 ## How it works
 
 At a high level, the firewall:
