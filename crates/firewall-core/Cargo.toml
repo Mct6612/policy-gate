@@ -62,3 +62,7 @@ harness = false
 [[bench]]
 name = "integration"
 harness = false
+
+[[bench]]
+name = "throughput"
+harness = false
