@@ -293,6 +293,22 @@ cargo clippy -p firewall-core -- -D warnings
 cargo check -p firewall-core --features semantic
 ```
 
+### Performance benchmarks
+
+```bash
+# All benchmarks
+cargo bench -p firewall-core
+
+# Individual benchmark groups
+cargo bench -p firewall-core --bench channel_a    # FSM + allowlist
+cargo bench -p firewall-core --bench channel_b    # Rule engine
+cargo bench -p firewall-core --bench voter        # 1oo2D decision logic
+cargo bench -p firewall-core --bench integration  # Full pipeline
+cargo bench -p firewall-core --bench normalise   # Unicode normalization
+```
+
+See [`crates/firewall-core/BENCHMARKS.md`](crates/firewall-core/BENCHMARKS.md) for detailed benchmark documentation.
+
 ### WASM / edge
 
 The workspace includes `crates/firewall-wasm` for edge and browser-oriented builds where the semantic feature remains disabled.

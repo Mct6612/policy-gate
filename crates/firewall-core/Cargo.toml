@@ -46,3 +46,19 @@ serde_json = "1"
 [[bench]]
 name = "normalise"
 harness = false
+
+[[bench]]
+name = "channel_a"
+harness = false
+
+[[bench]]
+name = "channel_b"
+harness = false
+
+[[bench]]
+name = "voter"
+harness = false
+
+[[bench]]
+name = "integration"
+harness = false
