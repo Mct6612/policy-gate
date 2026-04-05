@@ -11,6 +11,7 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 // Include generated centroids (8 clusters, 384 dimensions)
+#[path = "semantic_generated.rs"]
 mod semantic_generated;
 use semantic_generated::{ATTACK_CENTROIDS, CENTROID_DIMENSIONS, EXPECTED_CENTROID_HASH};
 

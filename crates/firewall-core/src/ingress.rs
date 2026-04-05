@@ -64,6 +64,7 @@ pub(crate) fn pre_scan_block(
     })
 }
 
+#[allow(clippy::result_large_err)]
 pub(crate) fn prompt_input_or_block(
     raw: String,
     sequence: u64,

@@ -217,6 +217,16 @@ fn find_pii(text: &str) -> Option<&'static str> {
             ("API Key", Regex::new(r"(?i)\b(?:api[_-]?key|apikey|api[_-]?secret|secret[_-]?key)\s*[:=]\s*['\x22]?[A-Za-z0-9_\-]{16,}").unwrap()),
             ("Bearer Token", Regex::new(r"(?i)\bbearer\s+[A-Za-z0-9_\-\.]{20,}").unwrap()),
             ("Password", Regex::new(r"(?i)\b(?:password|passwd|pwd|pass)\s*[:=]\s*['\x22]?[^\s'\x22]{4,}").unwrap()),
+            // SA-077: Extended PII patterns — medical, biometric, identity, financial, secrets
+            ("Medical Record", Regex::new(r"(?i)\bMRN[-\s]?\d{6,12}\b").unwrap()),
+            ("ICD-10 Code", Regex::new(r"(?i)\bICD[-\s]?10\b|\b[A-Z]\d{2}\.\d{1,4}\b").unwrap()),
+            ("Passport", Regex::new(r"(?i)\bpassport\b[^A-Za-z0-9]*[A-Z]{1,2}\d{6,9}\b|\b[A-Z]{2}\d{7}\b").unwrap()),
+            ("National ID", Regex::new(r"(?i)(?:national[_\s-]?id|nid|nin)\s*[:=>]?\s*[A-Z0-9]{6,20}|<national[_-]?id[^>]*>[^<]{4,}<").unwrap()),
+            ("Biometric Hash", Regex::new(r#"(?i)(?:fingerprint|biometric|retina|iris)[_\s-]?(?:hash|id|data|template)?\s*["']?\s*[:=]?\s*["']?[A-Za-z0-9+/]{16,}|"fingerprint"\s*:\s*"[A-Za-z0-9+/]{16,}"#).unwrap()),
+            ("Bitcoin Address", Regex::new(r"\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\b").unwrap()),
+            ("Ethereum Address", Regex::new(r"\b0x[0-9a-fA-F]{38,42}\b").unwrap()),
+            ("Private Key", Regex::new(r"(?i)\b(?:private[_-]?key|privkey|priv[_-]?key)\s*[:=]\s*['\x22]?[A-Za-z0-9+/=_\-]{32,}").unwrap()),
+            ("Database URL", Regex::new(r"(?i)\b(?:postgres|mysql|mongodb|redis|sqlite)://[^\s]{10,}").unwrap()),
         ]
     });
 

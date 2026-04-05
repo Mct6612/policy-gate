@@ -163,7 +163,7 @@ impl SessionManager {
             .sum();
 
         // Calculate escalation score (0-255, capped at 100)
-        session.escalation_score = (recent_indicators * 10).min(100) as u8;
+        session.escalation_score = (recent_indicators * 10).clamp(0, 100) as u8;
 
         // Detect fragmentation patterns
         session.fragmentation_detected = session.messages
@@ -259,7 +259,7 @@ impl SessionManager {
                 // This would need the original text - using hash as proxy
                 msg.input_hash.len() // Rough proxy for complexity
             })
-            .sum::<usize>() / previous_messages.len().min(3).max(1);
+            .sum::<usize>() / previous_messages.len().clamp(1, 3);
 
         let current_length = text.len();
         current_length > avg_prev_length * 2 // Double the average length
@@ -351,7 +351,7 @@ impl SessionManager {
         let recent_indicators: usize = recent_messages
             .iter()
             .map(|msg| msg.escalation_indicators.len())
-            .sum();
+            .sum::<usize>();
 
         recent_indicators >= 3 // 3+ indicators in last 3 messages
     }
@@ -443,7 +443,7 @@ static SESSION_MANAGER: OnceLock<SessionManager> = OnceLock::new();
 
 /// Initialize the global session manager.
 pub fn init_session_manager() {
-    let _ = SESSION_MANAGER.get_or_init(|| SessionManager::new());
+    let _ = SESSION_MANAGER.get_or_init(SessionManager::new);
 }
 
 /// Get the global session manager.

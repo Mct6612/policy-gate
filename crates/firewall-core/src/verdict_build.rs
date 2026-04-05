@@ -46,6 +46,7 @@ pub(crate) fn block_reason(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_final_verdict(
     input: &PromptInput,
     sequence: u64,

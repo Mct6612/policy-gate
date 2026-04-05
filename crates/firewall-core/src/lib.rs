@@ -17,6 +17,7 @@ mod advisory;
 mod audit;
 mod conversation;
 mod egress;
+mod egress_structured;
 mod ingress;
 mod init;
 mod orchestrator;
@@ -32,6 +33,10 @@ pub mod profile;
 mod config;
 // SA-076: Session-Aware-Layer for Multi-Turn Conversation Memory.
 pub mod session;
+// SA-077: Hot-reload configuration watcher.
+mod config_watcher;
+// SA-079: Structured Input Evaluation (JSON/YAML/Templates).
+mod structured;
 
 pub use advisory::{AdvisoryEvent, AdvisoryOpinion, ChannelC};
 pub use conversation::{evaluate_messages, evaluate_messages_windowed};
@@ -41,6 +46,9 @@ pub use types::*;
 
 // SA-076: Session-Aware-Layer exports
 pub use session::{SessionManager, SessionAnalysis, SessionRiskLevel, evaluate_with_session};
+
+// SA-077: Hot-reload config exports
+pub use config_watcher::{ConfigSnapshot, get_current_config, try_reload_config};
 
 use ingress::{pre_scan_block, prompt_input_or_block};
 use init::{is_initialised, uninitialised_block};

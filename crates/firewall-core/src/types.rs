@@ -1028,6 +1028,7 @@ pub struct AuditEntry {
 
 impl AuditEntry {
     /// Create a Basic audit entry (v2 schema, minimal storage).
+    #[allow(clippy::too_many_arguments)]
     pub fn basic(
         sequence: u64,
         verdict_kind: VerdictKind,
@@ -1063,6 +1064,7 @@ impl AuditEntry {
     }
 
     /// Create a Detailed audit entry (v2 schema, includes channel results).
+    #[allow(clippy::too_many_arguments)]
     pub fn detailed(
         sequence: u64,
         verdict_kind: VerdictKind,

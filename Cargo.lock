@@ -410,6 +410,7 @@ dependencies = [
  "ndarray 0.15.6",
  "ort",
  "proptest",
+ "rayon",
  "regex",
  "serde",
  "serde_json",

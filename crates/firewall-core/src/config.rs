@@ -13,7 +13,7 @@ use std::fs;
 use std::path::Path;
 
 /// Configuration structure for the firewall.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct FirewallConfig {
     /// Optional list of custom intent patterns.
     pub intents: Option<Vec<IntentEntry>>,
@@ -37,7 +37,7 @@ pub struct FirewallConfig {
 }
 
 /// A single intent pattern entry in the configuration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct IntentEntry {
     /// Stable ID for traceability (e.g., IP-200).
     pub id: String,

@@ -1416,4 +1416,187 @@ pub static RULE_TABLE: &[Rule] = &[
             }
         },
     },
+    // ── SA-078: Multilingual Allow Rules ─────────────────────────────────────
+    // German, French, Spanish factual questions, code generation, greetings,
+    // acknowledgements. Diverse from Channel A (keyword-based, no regex).
+    // CR-2026-003 | SA-078
+    Rule {
+        id: "RE-110",
+        description: "Allow: German factual question — diverse from IP-101",
+        evaluate: |input| {
+            let lower = input.to_lowercase();
+            if contains_any_ci(&lower, &["im developer-modus", "ohne sicherheit", "ohne filter", "trojaner", "malware", "schadcode"]) {
+                return RuleOutcome::Continue;
+            }
+            let has_wh = contains_any_ci(&lower, &["was ist", "wer ist", "wo ist", "wann ist", "welche", "welcher", "welches", "wie funktioniert", "warum"]);
+            if has_wh && ends_with_question_mark(input) && word_count(input) <= 40 {
+                RuleOutcome::Pass(MatchedIntent::QuestionFactual)
+            } else {
+                RuleOutcome::Continue
+            }
+        },
+    },
+    Rule {
+        id: "RE-111",
+        description: "Allow: French factual question — diverse from IP-102",
+        evaluate: |input| {
+            let lower = input.to_lowercase();
+            if contains_any_ci(&lower, &["en mode developpeur", "sans securite", "sans filtre", "troyen", "malware", "logiciel malveillant"]) {
+                return RuleOutcome::Continue;
+            }
+            let has_wh = contains_any_ci(&lower, &["qu'est", "quoi est", "qui est", "ou est", "quand est", "quel est", "quelle est", "comment fonctionne", "pourquoi"]);
+            if has_wh && ends_with_question_mark(input) && word_count(input) <= 40 {
+                RuleOutcome::Pass(MatchedIntent::QuestionFactual)
+            } else {
+                RuleOutcome::Continue
+            }
+        },
+    },
+    Rule {
+        id: "RE-112",
+        description: "Allow: Spanish factual question — diverse from IP-103",
+        evaluate: |input| {
+            let lower = input.to_lowercase();
+            if contains_any_ci(&lower, &["en modo desarrollador", "sin seguridad", "sin filtro", "troyano", "malware", "software malicioso"]) {
+                return RuleOutcome::Continue;
+            }
+            let has_wh = contains_any_ci(&lower, &["que es", "quien es", "donde esta", "cuando es", "cual es", "como funciona", "por que"]);
+            if has_wh && ends_with_question_mark(input) && word_count(input) <= 40 {
+                RuleOutcome::Pass(MatchedIntent::QuestionFactual)
+            } else {
+                RuleOutcome::Continue
+            }
+        },
+    },
+    Rule {
+        id: "RE-113",
+        description: "Allow: German code generation — diverse from IP-110",
+        evaluate: |input| {
+            let lower = input.to_lowercase();
+            if contains_any_ci(&lower, &["trojaner", "malware", "schadcode", "backdoor", "keylogger", "exploit", "hacken"]) {
+                return RuleOutcome::Continue;
+            }
+            let has_verb = contains_any_ci(&lower, &["schreib", "erstell", "generier", "implementier", "programmier"]);
+            let has_noun = contains_any_ci(&lower, &["funktion", "klasse", "modul", "skript", "programm", "methode", "algorithmus"]);
+            if has_verb && has_noun && word_count(input) <= 40 {
+                RuleOutcome::Pass(MatchedIntent::TaskCodeGeneration)
+            } else {
+                RuleOutcome::Continue
+            }
+        },
+    },
+    Rule {
+        id: "RE-114",
+        description: "Allow: French code generation — diverse from IP-111",
+        evaluate: |input| {
+            let lower = input.to_lowercase();
+            if contains_any_ci(&lower, &["troyen", "malware", "logiciel malveillant", "exploit", "pirater"]) {
+                return RuleOutcome::Continue;
+            }
+            let has_verb = contains_any_ci(&lower, &["ecris", "cree", "genere", "implemente", "programme"]);
+            let has_noun = contains_any_ci(&lower, &["fonction", "classe", "module", "script", "programme", "methode", "algorithme"]);
+            if has_verb && has_noun && word_count(input) <= 40 {
+                RuleOutcome::Pass(MatchedIntent::TaskCodeGeneration)
+            } else {
+                RuleOutcome::Continue
+            }
+        },
+    },
+    Rule {
+        id: "RE-115",
+        description: "Allow: Spanish code generation — diverse from IP-112",
+        evaluate: |input| {
+            let lower = input.to_lowercase();
+            if contains_any_ci(&lower, &["troyano", "malware", "software malicioso", "exploit", "hackear"]) {
+                return RuleOutcome::Continue;
+            }
+            let has_verb = contains_any_ci(&lower, &["escribe", "crea", "genera", "implementa", "programa"]);
+            let has_noun = contains_any_ci(&lower, &["funcion", "clase", "modulo", "script", "programa", "metodo", "algoritmo"]);
+            if has_verb && has_noun && word_count(input) <= 40 {
+                RuleOutcome::Pass(MatchedIntent::TaskCodeGeneration)
+            } else {
+                RuleOutcome::Continue
+            }
+        },
+    },
+    Rule {
+        id: "RE-120",
+        description: "Allow: German greeting — diverse from IP-120",
+        evaluate: |input| {
+            let lower = input.to_lowercase();
+            let is_greeting = contains_any_ci(&lower, &["guten tag", "guten morgen", "guten abend", "hallo", "moin", "servus"]);
+            if is_greeting && word_count(input) <= 5 {
+                RuleOutcome::Pass(MatchedIntent::ConversationalGreeting)
+            } else {
+                RuleOutcome::Continue
+            }
+        },
+    },
+    Rule {
+        id: "RE-121",
+        description: "Allow: French greeting — diverse from IP-121",
+        evaluate: |input| {
+            let lower = input.to_lowercase();
+            let is_greeting = contains_any_ci(&lower, &["bonjour", "bonsoir", "salut", "allo", "bonne journee", "bonne nuit"]);
+            if is_greeting && word_count(input) <= 5 {
+                RuleOutcome::Pass(MatchedIntent::ConversationalGreeting)
+            } else {
+                RuleOutcome::Continue
+            }
+        },
+    },
+    Rule {
+        id: "RE-122",
+        description: "Allow: Spanish greeting — diverse from IP-124",
+        evaluate: |input| {
+            let lower = input.to_lowercase();
+            // Strip leading ¡ for matching
+            let stripped = lower.trim_start_matches('¡').trim_start_matches('!');
+            let is_greeting = starts_with_any_ci(stripped, &["buenos dias", "buenas tardes", "buenas noches", "hola", "que tal", "buenas"]);
+            if is_greeting && word_count(input) <= 5 {
+                RuleOutcome::Pass(MatchedIntent::ConversationalGreeting)
+            } else {
+                RuleOutcome::Continue
+            }
+        },
+    },
+    Rule {
+        id: "RE-130",
+        description: "Allow: German acknowledgement — diverse from IP-122",
+        evaluate: |input| {
+            let lower = input.to_lowercase();
+            let is_ack = contains_any_ci(&lower, &["jawohl", "alles klar", "verstanden", "naturlich", "selbstverstandlich"]);
+            if is_ack && word_count(input) <= 5 {
+                RuleOutcome::Pass(MatchedIntent::ConversationalAcknowledgement)
+            } else {
+                RuleOutcome::Continue
+            }
+        },
+    },
+    Rule {
+        id: "RE-131",
+        description: "Allow: French acknowledgement — diverse from IP-123",
+        evaluate: |input| {
+            let lower = input.to_lowercase();
+            let is_ack = contains_any_ci(&lower, &["d'accord", "entendu", "compris", "bien sur", "parfait"]);
+            if is_ack && word_count(input) <= 5 {
+                RuleOutcome::Pass(MatchedIntent::ConversationalAcknowledgement)
+            } else {
+                RuleOutcome::Continue
+            }
+        },
+    },
+    Rule {
+        id: "RE-132",
+        description: "Allow: Spanish acknowledgement — diverse from IP-125",
+        evaluate: |input| {
+            let lower = input.to_lowercase();
+            let is_ack = contains_any_ci(&lower, &["entendido", "por supuesto", "de acuerdo", "claro que si"]);
+            if is_ack && word_count(input) <= 5 {
+                RuleOutcome::Pass(MatchedIntent::ConversationalAcknowledgement)
+            } else {
+                RuleOutcome::Continue
+            }
+        },
+    },
 ];

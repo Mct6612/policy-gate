@@ -75,6 +75,9 @@ fn init_with_profile_internal(profile: FirewallProfile) -> Result<(), crate::Fir
     let _ = ACTIVE_PROFILE_INTENTS.get_or_init(|| profile.permitted_intents());
     let config = STATIC_CONFIG.get_or_init(|| config::FirewallConfig::load().unwrap_or_default());
 
+    // SA-077: Initialize config watcher with the loaded config snapshot.
+    crate::config_watcher::init_config_watcher(config.clone());
+
     let result = INIT_RESULT.get_or_init(|| {
         // Inject dynamic config before the startup self-test warms the matcher set.
         if let Some(custom) = &config.intents {
@@ -92,8 +95,8 @@ fn init_with_profile_internal(profile: FirewallProfile) -> Result<(), crate::Fir
         }
 
         #[cfg(feature = "semantic")]
-        if let (Some(m), Some(t)) = (&config.semantic_model_path, &config.tokenizer_path) {
-            crate::semantic::ChannelD::init(m, t)
+        {
+            crate::semantic::ChannelD::init()
                 .map_err(|e| format!("Channel D init failed: {}", e))?;
         }
 
