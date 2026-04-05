@@ -18,6 +18,7 @@ It is designed for teams that want predictable enforcement, auditable decisions,
 - deterministic allowlist-first enforcement
 - fail-closed behavior on ambiguity, disagreement, or fault
 - auditable PASS/BLOCK outcomes
+- **shadow mode** for safe deployment and observability without active blocking
 - advisory heuristics and semantic analysis kept outside the safety path
 - optional session-aware analysis for multi-turn escalation patterns
 - Rust core with Node, Python, and WASM targets
@@ -123,14 +124,140 @@ console.log(`High-risk sessions: ${stats.highRiskSessions}`);
 ```python
 import policy_gate
 
-policy_gate.init()
+policy_gate.init() # Will load shadow_mode=true if configured in firewall.toml
 
 verdict = policy_gate.evaluate_raw("What is the capital of France?")
 
 if not verdict["is_pass"]:
     raise RuntimeError(f"Blocked: {verdict['block_reason']}")
+# In shadow mode, is_pass is True even if block_reason is populated in the audit trail
 ```
 
+### Standalone Reverse Proxy (Zero-Code Integration)
+
+For environments where deploying an integrated library is not feasible, `policy-gate` ships a standalone HTTP reverse proxy (`crates/firewall-proxy`) built on `axum`.
+
+```bash
+# Start with defaults (port 8080, targets OpenAI)
+cargo run --release -p firewall-proxy
+
+# Or fully configured:
+export UPSTREAM_URL="https://api.openai.com/v1/chat/completions"
+export PORT=8080
+cargo run --release -p firewall-proxy
+```
+
+Then point your application's `baseURL` at `http://localhost:8080/v1` — no code changes required.
+
+#### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `8080` | Proxy listening port |
+| `UPSTREAM_URL` | `https://api.openai.com/v1/chat/completions` | Target LLM API (OpenAI, Anthropic, Ollama, …) |
+| `CONFIG_RELOAD_INTERVAL_SECS` | `30` | Polling interval for `firewall.toml` hot-reload |
+
+#### Request flow
+
+```text
+App → POST /v1/chat/completions
+  → [ingress: policy-gate evaluate]
+  → 403 if blocked  ──────────────────────────────────── (never reaches internet)
+  → forward to UPSTREAM_URL
+  → [egress: policy-gate evaluate_output]
+  → 403 if PII / leakage detected
+  → 200 + response to App
+```
+
+> [!WARNING]
+> **Streaming constraints:** The `firewall-proxy` rejects requests containing `"stream": true` with HTTP 400. Streaming responses arrive in partial chunks, making it impossible to evaluate the complete response before delivery — this would violate the fail-closed egress safety guarantee.
+
+#### Observability — Prometheus metrics
+
+The proxy exposes a `/metrics` endpoint in Prometheus text exposition format on the same port:
+
+```bash
+curl http://localhost:8080/metrics
+```
+
+Available metrics:
+
+| Metric | Labels | Description |
+|---|---|---|
+| `policy_gate_requests_total` | — | All incoming requests |
+| `policy_gate_verdicts_total` | `verdict=pass\|block\|egress_block` | Decision distribution |
+| `policy_gate_blocked_total` | `reason=ingress_policy\|egress_policy\|malformed_input\|empty_content` | Block reason breakdown |
+| `policy_gate_streaming_rejected_total` | — | Rejected streaming requests |
+| `policy_gate_upstream_errors_total` | — | Upstream API connection failures |
+| `policy_gate_request_duration_ms` | `outcome=pass\|ingress_block\|egress_block` | End-to-end latency histogram |
+
+Example Prometheus scrape config:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: policy-gate-proxy
+    static_configs:
+      - targets: ["localhost:8080"]
+    metrics_path: /metrics
+```
+
+#### Hot-reload — live config updates without restart
+
+The proxy polls `firewall.toml` every `CONFIG_RELOAD_INTERVAL_SECS` seconds (default: 30).
+A `POST /reload` endpoint triggers an immediate reload on demand:
+
+```bash
+# Trigger immediate reload (e.g. after editing firewall.toml)
+curl -X POST http://localhost:8080/reload
+# {"status":"reloaded","message":"New config is now active."}
+
+# Already up-to-date
+curl -X POST http://localhost:8080/reload
+# {"status":"unchanged","message":"firewall.toml has not changed."}
+```
+
+> [!NOTE]
+> If the new `firewall.toml` contains an invalid regex or broken config, the reload is **rejected** and the old config stays active. The response will be HTTP 500 with the validation error. This makes config changes fully safe to deploy without risking downtime.
+
+Reload events are tracked by the `policy_gate_config_reloads_total{result="changed|error"}` Prometheus counter.
+
+## Deployment (Enterprise Ready)
+
+`policy-gate` is designed for production reliability and can be deployed using standard DevOps tooling.
+
+### Docker
+
+A multi-stage, hardened Docker image is provided. To build it, you **must** provide the `POLICY_GATE_INIT_TOKEN`:
+
+```bash
+docker build -t policy-gate:latest \
+  --build-arg POLICY_GATE_INIT_TOKEN=$(openssl rand -hex 32) .
+```
+
+Run the container:
+```bash
+docker run -p 8080:8080 \
+  -e UPSTREAM_URL="https://api.openai.com/v1/chat/completions" \
+  policy-gate:latest
+```
+
+### Kubernetes (Helm)
+
+For scalable enterprise deployments, use the provided Helm chart:
+
+```bash
+# Install with custom values
+helm install policy-gate ./helm/policy-gate \
+  --set proxy.upstreamUrl="https://api.openai.com/v1/chat/completions" \
+  --set proxy.initToken="YOUR_SECURE_TOKEN"
+```
+
+The Helm chart automatically handles:
+- **High Availability:** Multiple replicas with anti-affinity.
+- **Config Management:** `firewall.toml` is managed via ConfigMap and hot-reloaded.
+- **Security:** Running as a non-root user with a read-only root filesystem.
+- **Monitoring:** Integrated health checks and Prometheus support.
 ## High-throughput workloads
 
 ### Node.js (async / concurrent)

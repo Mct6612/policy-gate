@@ -931,6 +931,8 @@ pub enum VerdictKind {
     DiagnosticDisagreement,
     /// SA-069: Egress filtering blocked the LLM response.
     EgressBlock,
+    /// Shadow Mode: firewall would have blocked, but allowed it to pass for observability.
+    ShadowPass,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -946,7 +948,7 @@ impl Verdict {
     pub fn is_pass(&self) -> bool {
         matches!(
             self.kind,
-            VerdictKind::Pass | VerdictKind::DiagnosticAgreement
+            VerdictKind::Pass | VerdictKind::DiagnosticAgreement | VerdictKind::ShadowPass
         )
     }
 }
@@ -1143,7 +1145,7 @@ pub struct EgressVerdict {
 
 impl EgressVerdict {
     pub fn is_pass(&self) -> bool {
-        matches!(self.kind, VerdictKind::Pass)
+        matches!(self.kind, VerdictKind::Pass | VerdictKind::ShadowPass)
     }
 }
 

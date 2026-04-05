@@ -1,0 +1,115 @@
+# ─── policy-gate Helm Chart — values.yaml ────────────────────────────────────
+# All values here are the defaults. Override via --set or a custom values file.
+#
+# Example:
+#   helm install policy-gate ./helm/policy-gate \
+#     --set proxy.upstreamUrl="https://api.anthropic.com/v1/messages" \
+#     --set proxy.initToken="$(openssl rand -hex 32)"
+
+# ─── Replica count ──────────────────────────────────────────────────────────
+replicaCount: 2
+
+# ─── Container image ────────────────────────────────────────────────────────
+image:
+  repository: ghcr.io/your-org/policy-gate
+  pullPolicy: IfNotPresent
+  tag: ""  # Defaults to .Chart.appVersion
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# ─── Proxy configuration ────────────────────────────────────────────────────
+proxy:
+  # Target LLM API endpoint — change to Anthropic, Ollama, Azure OpenAI, etc.
+  upstreamUrl: "https://api.openai.com/v1/chat/completions"
+
+  # Port the proxy listens on inside the container
+  port: 8080
+
+  # How often to poll firewall.toml for config changes (seconds)
+  configReloadIntervalSecs: 30
+
+  # SA-073: Build-time init token — REQUIRED. Must match the token baked into
+  # the Docker image at build time via POLICY_GATE_INIT_TOKEN.
+  # Provide via --set proxy.initToken or a sealed secret.
+  initToken: ""
+
+  # HMAC key for audit chain integrity (SA-075). Auto-generated if empty.
+  # For cross-restart chain continuity, provide a stable 32-byte hex key.
+  hmacKey: ""
+
+# ─── firewall.toml (mounted as ConfigMap) ───────────────────────────────────
+# The contents of this key are written to /app/firewall.toml inside the pod.
+# Edit to enable shadow mode, add custom intent patterns, or forbidden keywords.
+firewallConfig: |
+  # shadow_mode = true   # Uncomment to enable dry-run / observability mode
+
+  # [forbidden_keywords]
+  # extra_attack_verbs = ["exfiltrate", "weaponize"]
+
+  # [[intents]]
+  # id     = "IP-200"
+  # intent = "QuestionFactual"
+  # regex  = "(?i)\\b(diagnose|symptoms of|treatment for)\\b.{0,200}\\?"
+
+# ─── Service ────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# ─── Ingress ────────────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: policy-gate.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# ─── Resources ──────────────────────────────────────────────────────────────
+# policy-gate is CPU-bound and very memory-efficient (~4 MB RSS at idle).
+resources:
+  requests:
+    cpu: "100m"
+    memory: "32Mi"
+  limits:
+    cpu: "500m"
+    memory: "128Mi"
+
+# ─── Autoscaling (HPA) ──────────────────────────────────────────────────────
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+
+# ─── Prometheus ServiceMonitor (requires prometheus-operator) ───────────────
+serviceMonitor:
+  enabled: false
+  interval: "30s"
+  path: /metrics
+  # namespace: monitoring  # Override if Prometheus is in a different namespace
+
+# ─── Security context ───────────────────────────────────────────────────────
+# Runs as non-root user (UID 1001) — matches Dockerfile USER directive.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# ─── Node selector / tolerations / affinity ─────────────────────────────────
+nodeSelector: {}
+tolerations: []
+affinity: {}

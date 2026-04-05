@@ -6,6 +6,7 @@ members = [
     "crates/firewall-fuzz",
     "crates/firewall-pyo3",
     "crates/firewall-wasm",
+    "crates/firewall-proxy",
 ]
 resolver = "2"
 

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: policy-gate
+description: |
+  Deterministic LLM prompt firewall — standalone reverse proxy with
+  fail-closed allowlist enforcement, egress PII detection, shadow mode,
+  Prometheus metrics, and live config hot-reload.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - llm
+  - security
+  - firewall
+  - ai-safety
+  - prompt-injection
+home: https://github.com/your-org/policy-gate
+maintainers:
+  - name: policy-gate maintainers

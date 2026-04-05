@@ -71,6 +71,12 @@ pub(crate) fn evaluate(
     let mut verdict_kind = Voter::decide(&channel_a, &channel_b);
     apply_profile_filter(&mut verdict_kind, &mut channel_a, &mut channel_b);
 
+    if get_config().and_then(|c| c.shadow_mode).unwrap_or(false) 
+        && !matches!(verdict_kind, VerdictKind::Pass | VerdictKind::DiagnosticAgreement) 
+    {
+        verdict_kind = VerdictKind::ShadowPass;
+    }
+
     let advisory_opinion = advisory::ChannelC::evaluate(&input.text);
     let advisory_event = advisory::ChannelC::audit_event(&advisory_opinion, &verdict_kind);
     let advisory_tag = build_advisory_tag(&advisory_event);

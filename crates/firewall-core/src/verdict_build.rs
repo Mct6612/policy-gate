@@ -30,7 +30,7 @@ pub(crate) fn block_reason(
 ) -> Option<BlockReason> {
     match verdict_kind {
         VerdictKind::Pass | VerdictKind::DiagnosticAgreement => None,
-        VerdictKind::Block | VerdictKind::DiagnosticDisagreement | VerdictKind::EgressBlock => {
+        VerdictKind::Block | VerdictKind::DiagnosticDisagreement | VerdictKind::EgressBlock | VerdictKind::ShadowPass => {
             match &channel_a.decision {
                 ChannelDecision::Block { reason } => Some(reason.clone()),
                 ChannelDecision::Fault { .. } => match &channel_b.decision {

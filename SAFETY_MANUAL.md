@@ -719,6 +719,17 @@ Session layer significantly improves multi-turn attack detection but remains adv
 | SR-019             | H-16   | Session-Aware-Layer multi-turn detection                         | `session.rs`, `lib.rs::evaluate_with_session`              | —                    | `session_tests`, `session_aware_e2e`              |
 
 
+## 7.9 Operation Modes (Shadow Mode)
+
+The firewall can be configured to run in "Shadow Mode" (`shadow_mode = true` in configuration).
+
+**Safety Implication (SA-077):**
+- When Shadow Mode is active, the firewall calculates the full verdict (including `Block` / `EgressBlock`) and records the exact block reason in the audit trail.
+- It then **forcefully overrides** the final verdict to `ShadowPass`, allowing the prompt or response to continue to its destination.
+- `ShadowPass` events are automatically enqueued into the Diagnostic Review Queue for operator inspection with a 24-hour SLA.
+
+**Warning:** Shadow mode is designed solely for dry-run trial deployments and observability tuning. When enabled, the firewall **is not** providing active protection. All fail-closed guarantees are suspended in favor of observability.
+
 ## 8. Operational Constraints and Deployment Requirements
 
 ### 8.1 Mandatory pre-conditions

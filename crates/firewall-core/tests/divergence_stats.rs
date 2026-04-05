@@ -31,7 +31,7 @@ fn measure_divergence_rate() {
                 pass += 1;
                 agreement += 1;
             }
-            VerdictKind::DiagnosticAgreement => {
+            VerdictKind::DiagnosticAgreement | VerdictKind::ShadowPass => {
                 pass += 1;
                 diag_agreement += 1;
             }

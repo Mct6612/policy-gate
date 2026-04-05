@@ -15,6 +15,16 @@
 #                       # Default is 3. Set to 1 to disable (equivalent to stateless).
 #                       # Bounded by O(N) evaluation cost.
 
+# ─── Optional: Shadow Mode ────────────────────────────────────────────────────
+#
+# shadow_mode = true    # Dry-run / Observability mode. 
+#                       # When true, the firewall fully evaluates all prompts and
+#                       # calculates whether they should be blocked. However, it
+#                       # will forcefully override the Verdict to "Pass".
+#                       # The audit trail will contain VerdictKind = "ShadowPass"
+#                       # and the exact reason it would have been blocked.
+#                       # Use this for safe trial runs without impacting users.
+
 # ─── Optional: extend or replace the built-in forbidden keywords ──────────────
 #
 # [forbidden_keywords]

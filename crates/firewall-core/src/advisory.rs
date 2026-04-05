@@ -380,7 +380,8 @@ impl ChannelC {
                     }
                     VerdictKind::Block
                     | VerdictKind::DiagnosticDisagreement
-                    | VerdictKind::EgressBlock => {
+                    | VerdictKind::EgressBlock
+                    | VerdictKind::ShadowPass => {
                         // Voter already blocked — Channel C agrees on outcome.
                         AdvisoryEvent::None
                     }

@@ -1,0 +1,30 @@
+# Files excluded from the Docker build context.
+# Keeping the context small speeds up docker build considerably.
+
+# Rust build artifacts (large, not needed in context — built inside container)
+/target/
+
+# Node / Python tooling
+node_modules/
+*.pyc
+__pycache__/
+dist/
+
+# Version control
+.git/
+.gitignore
+
+# Editor / IDE
+.cursor/
+.vscode/
+*.swp
+
+# Test artifacts and local state
+fuzz/
+simulated_audit.ndjson
+probing_verification.ndjson
+audit_chain.seal
+
+# OS
+.DS_Store
+Thumbs.db

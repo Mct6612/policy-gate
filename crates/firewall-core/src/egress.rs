@@ -59,12 +59,19 @@ pub(crate) fn evaluate_output(
     let channel_e = crate::fsm::egress::ChannelE::evaluate(prompt, response);
     let channel_f = crate::rule_engine::egress::ChannelF::evaluate(prompt, response);
 
-    let verdict_kind = match (&channel_e.decision, &channel_f.decision) {
+    let mut verdict_kind = match (&channel_e.decision, &channel_f.decision) {
         (ChannelDecision::Pass { .. }, ChannelDecision::Pass { .. }) => VerdictKind::Pass,
         _ => VerdictKind::EgressBlock,
     };
 
     let egress_reason = egress_reason(&channel_e, &channel_f, &verdict_kind);
+
+    if crate::init::get_config().and_then(|c| c.shadow_mode).unwrap_or(false)
+        && verdict_kind == VerdictKind::EgressBlock
+    {
+        verdict_kind = VerdictKind::ShadowPass;
+    }
+
     let decided_ns = now_ns();
     let mut audit = AuditEntry::basic(
         sequence,

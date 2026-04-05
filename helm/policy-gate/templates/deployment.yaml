@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "policy-gate.fullname" . }}
+  labels:
+    {{- include "policy-gate.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "policy-gate.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Force pod restart when firewall.toml ConfigMap changes
+        checksum/config: {{ .Values.firewallConfig | sha256sum }}
+      labels:
+        {{- include "policy-gate.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.proxy.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.proxy.port | quote }}
+            - name: UPSTREAM_URL
+              value: {{ .Values.proxy.upstreamUrl | quote }}
+            - name: CONFIG_RELOAD_INTERVAL_SECS
+              value: {{ .Values.proxy.configReloadIntervalSecs | quote }}
+            {{- if .Values.proxy.initToken }}
+            - name: POLICY_GATE_INIT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "policy-gate.fullname" . }}-secret
+                  key: init-token
+            {{- end }}
+            {{- if .Values.proxy.hmacKey }}
+            - name: POLICY_GATE_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "policy-gate.fullname" . }}-secret
+                  key: hmac-key
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: firewall-config
+              mountPath: /app/firewall.toml
+              subPath: firewall.toml
+              readOnly: true
+      volumes:
+        - name: firewall-config
+          configMap:
+            name: {{ include "policy-gate.fullname" . }}-config
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

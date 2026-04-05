@@ -22,6 +22,8 @@ pub struct FirewallConfig {
     /// Lookback window for contextual evaluation (Red-Team Strategy 3).
     /// Default is 3 if not specified.
     pub context_window: Option<usize>,
+    /// Shadow Mode: evaluates inputs but allows them to pass even if blocked.
+    pub shadow_mode: Option<bool>,
     #[cfg(feature = "semantic")]
     pub semantic_model_path: Option<String>,
     /// Optional path to the tokenizer for Channel D.

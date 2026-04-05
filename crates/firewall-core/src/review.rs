@@ -12,6 +12,7 @@ pub(crate) fn track_review_item(verdict: &Verdict) {
     let sla_hours = match verdict.kind {
         VerdictKind::DiagnosticDisagreement => DIAGNOSTIC_DISAGREEMENT_SLA_HOURS,
         VerdictKind::DiagnosticAgreement => DIAGNOSTIC_AGREEMENT_SLA_HOURS,
+        VerdictKind::ShadowPass => 24, // High priority - we let a blocked input through
         _ => return,
     };
 
