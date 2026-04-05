@@ -29,6 +29,9 @@ pub struct ConfigSnapshot {
 /// Global configuration state — protected by RwLock for hot-reload.
 static CONFIG_STATE: OnceLock<RwLock<ConfigSnapshot>> = OnceLock::new();
 
+/// Map of Tenant IDs to their last-known file hashes for hot-reload change detection.
+static TENANT_FILE_HASHES: OnceLock<RwLock<std::collections::HashMap<String, u64>>> = OnceLock::new();
+
 /// Initialize the config watcher with the initial configuration.
 pub(crate) fn init_config_watcher(initial_config: config::FirewallConfig) {
     let file_hash = compute_config_hash(&initial_config);
@@ -62,34 +65,84 @@ pub fn try_reload_config() -> Result<bool, String> {
     }
     
     // Validate the new config before applying
-    if let Some(custom) = &new_config.intents {
-        for entry in custom {
-            regex::Regex::new(&entry.regex).map_err(|e| {
-                format!("Invalid regex in intent pattern [{}]: {}", entry.id, e)
-            })?;
-        }
-    }
-    
-    // Apply the new config
-    if let Ok(lock) = CONFIG_STATE.get().ok_or("Config not initialized")?.write() {
-        // This is a bit tricky — we need to replace the entire snapshot
-        // The RwLock doesn't have a direct replace, so we drop the write guard
-        // and re-acquire it. This is safe because we're the only writer.
-        drop(lock);
+    if let Err(errors) = new_config.validate() {
+        return Err(format!("Staged validation failed: {}", errors.join("; ")));
     }
     
     let snapshot = ConfigSnapshot {
-        config: new_config,
+        config: new_config.clone(),
         loaded_at_ns: now_ns(),
         file_hash: new_hash,
     };
     
     if let Ok(mut lock) = CONFIG_STATE.get().ok_or("Config not initialized")?.write() {
         *lock = snapshot;
+        // Update the 'default' tenant in the registry as well
+        if let Some(registry_lock) = crate::init::get_tenant_registry() {
+            if let Ok(mut reg) = registry_lock.write() {
+                reg.insert("default".into(), new_config);
+            }
+        }
+        // SA-048: Dynamic patterns are updated via the config snapshot, but 
+        // the evaluation cache contains decisions based on the old policy.
+        crate::clear_eval_cache();
         Ok(true)
     } else {
         Err("Failed to acquire write lock on config".into())
     }
+}
+
+/// Attempt to reload all tenant configurations from a directory.
+/// Returns Ok(true) if at least one tenant was reloaded.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn reload_tenant_directory<P: AsRef<std::path::Path>>(dir_path: P) -> Result<bool, String> {
+    let dir = dir_path.as_ref();
+    if !dir.is_dir() {
+        return Err(format!("{} is not a directory", dir.display()));
+    }
+
+    let mut changed = false;
+    let hash_map_lock = TENANT_FILE_HASHES.get_or_init(|| RwLock::new(std::collections::HashMap::new()));
+    let registry_lock = crate::init::get_tenant_registry()
+        .ok_or("Tenant registry not initialized")?;
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+                if let Ok(cfg) = config::FirewallConfig::load_from_path(&path) {
+                    let tenant_id = cfg.tenant_id.clone()
+                        .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
+                        .unwrap_or_else(|| "default".into());
+                    
+                    let new_hash = compute_config_hash(&cfg);
+                    
+                    let should_reload = if let Ok(hashes) = hash_map_lock.read() {
+                        hashes.get(&tenant_id).copied() != Some(new_hash)
+                    } else {
+                        true
+                    };
+
+                    if should_reload {
+                        if cfg.validate().is_ok() {
+                            if let Ok(mut reg) = registry_lock.write() {
+                                reg.insert(tenant_id.clone(), cfg);
+                                if let Ok(mut hashes) = hash_map_lock.write() {
+                                    hashes.insert(tenant_id, new_hash);
+                                }
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if changed {
+        crate::clear_eval_cache();
+    }
+    Ok(changed)
 }
 
 /// Compute a simple hash of the configuration for change detection.

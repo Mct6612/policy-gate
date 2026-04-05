@@ -30,7 +30,7 @@ pub mod semantic;
 // SA-047: Multi-tenant profile system — restricts permitted intents at init() time.
 pub mod profile;
 // SA-048: TOML configuration loading — extensions to allowlist/keywords.
-mod config;
+pub mod config;
 // SA-076: Session-Aware-Layer for Multi-Turn Conversation Memory.
 pub mod session;
 // SA-077: Hot-reload configuration watcher.
@@ -52,8 +52,38 @@ pub use config_watcher::{ConfigSnapshot, get_current_config, try_reload_config};
 
 use ingress::{pre_scan_block, prompt_input_or_block};
 use init::{is_initialised, uninitialised_block};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{atomic::{AtomicU64, Ordering}, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+// ─── Evaluation Cache (Pillar 2: Performance) ───────────────────────────────
+
+/// Represents the stable, cacheable part of a safety verdict.
+/// Excludes call-specific metadata like sequence numbers, timestamps, and audit HMACs.
+#[derive(Clone, Debug)]
+struct CachedResult {
+    kind: VerdictKind,
+    channel_a_decision: ChannelDecision,
+    channel_b_decision: ChannelDecision,
+    advisory_tag: AdvisoryTag,
+}
+
+static EVAL_CACHE: OnceLock<Mutex<lru::LruCache<String, CachedResult>>> = OnceLock::new();
+const DEFAULT_CACHE_CAPACITY: usize = 1000;
+
+fn get_cache() -> &'static Mutex<lru::LruCache<String, CachedResult>> {
+    EVAL_CACHE.get_or_init(|| {
+        Mutex::new(lru::LruCache::new(std::num::NonZeroUsize::new(DEFAULT_CACHE_CAPACITY).unwrap()))
+    })
+}
+
+/// Clears the evaluation cache. Called during hot-reloads of firewall.toml.
+pub(crate) fn clear_eval_cache() {
+    if let Some(cache_mutex) = EVAL_CACHE.get() {
+        if let Ok(mut cache) = cache_mutex.lock() {
+            cache.clear();
+        }
+    }
+}
 
 // ─── Monotonic sequence counter ──────────────────────────────────────────────
 //
@@ -100,6 +130,26 @@ pub fn init_with_profile(profile: FirewallProfile) -> Result<(), FirewallInitErr
     init::init_with_profile(profile)
 }
 
+/// Initialise the firewall with an explicit configuration object.
+///
+/// This is the preferred method for WASM and other push-based environments.
+pub fn init_with_config(
+    token: &str,
+    config: config::FirewallConfig,
+) -> Result<(), FirewallInitError> {
+    init::init_with_config(token, config)
+}
+
+/// Initialize the firewall with multiple tenant configurations from a directory.
+/// (Pillar 5: Multi-Tenant Policy Hub)
+#[cfg(not(target_arch = "wasm32"))]
+pub fn init_multi_tenant_registry<P: AsRef<std::path::Path>>(
+    token: &str,
+    dir_path: P,
+) -> Result<(), FirewallInitError> {
+    init::init_multi_tenant_registry(token, dir_path)
+}
+
 #[derive(Debug)]
 pub enum FirewallInitError {
     PatternCompileFailure(String),
@@ -115,10 +165,11 @@ impl std::fmt::Display for FirewallInitError {
     }
 }
 
-pub fn evaluate_output(
+pub fn evaluate_output_for_tenant(
     prompt: &PromptInput,
     response: &str,
     sequence: u64,
+    tenant_id: Option<&str>,
 ) -> Result<EgressVerdict, String> {
     if !is_initialised() {
         return Ok(EgressVerdict {
@@ -131,7 +182,15 @@ pub fn evaluate_output(
         });
     }
 
-    Ok(egress::evaluate_output(prompt, response, sequence))
+    Ok(egress::evaluate_output(prompt, response, sequence, tenant_id))
+}
+
+pub fn evaluate_output(
+    prompt: &PromptInput,
+    response: &str,
+    sequence: u64,
+) -> Result<EgressVerdict, String> {
+    evaluate_output_for_tenant(prompt, response, sequence, None)
 }
 
 // ─── Main evaluation function ─────────────────────────────────────────────────
@@ -144,43 +203,84 @@ pub fn evaluate_output(
 /// after NFKC normalisation (SA-010: hard reject, no silent truncation).
 ///
 /// `sequence` is a caller-managed monotonic counter for audit ordering.
-pub fn evaluate_raw(raw: impl Into<String>, sequence: u64) -> Verdict {
+/// Evaluate a raw string through the safety gate for a specific tenant.
+pub fn evaluate_raw_for_tenant(
+    raw: impl Into<String>,
+    sequence: u64,
+    tenant_id: Option<String>,
+) -> Verdict {
     // DC-GAP-05: guard for direct firewall-core callers (mirrors napi SA-021 guard).
     if !is_initialised() {
         return uninitialised_block(sequence, now_ns());
     }
 
-    // SA-033: capture ingested_at_ns BEFORE PromptInput::new() so the timestamp
-    // reflects the moment the raw input arrived, not after normalisation work.
-    // Materialise raw as String first so we can hash it in the Err path (#6).
     let raw: String = raw.into();
     let ingested_at_ns = now_ns();
+
+    // ── Pillar 5: Tenant-specific Cache ─────────────────────────────────────
+    // We include tenant_id in the cache key to prevent cross-tenant leakage.
+    let cache_key = format!("{}:{}", tenant_id.as_deref().unwrap_or("default"), raw);
+
+    if let Ok(mut cache) = get_cache().lock() {
+        if let Some(cached) = cache.get(&cache_key).cloned() {
+            let decided_ns = now_ns();
+            return verdict_build::build_final_verdict_from_cache(
+                &raw,
+                sequence,
+                cached.kind,
+                cached.advisory_tag,
+                decided_ns,
+                ((decided_ns - ingested_at_ns) / 1_000).min(u64::MAX as u128) as u64,
+                cached.channel_a_decision,
+                cached.channel_b_decision,
+                AuditDetailLevel::Basic,
+                tenant_id,
+            );
+        }
+    }
 
     if let Some(verdict) = pre_scan_block(&raw, sequence, ingested_at_ns, now_ns) {
         return verdict;
     }
 
-    match prompt_input_or_block(raw, sequence, ingested_at_ns, now_ns) {
-        Ok(input) => evaluate(input, sequence),
-        Err(verdict) => verdict,
+    let verdict = match prompt_input_or_block(raw.clone(), sequence, ingested_at_ns, now_ns) {
+        Ok(input) => evaluate_for_tenant(input, sequence, tenant_id.as_deref()),
+        Err(v) => v,
+    };
+
+    if matches!(verdict.kind, VerdictKind::Pass | VerdictKind::Block) {
+        if let Ok(mut cache) = get_cache().lock() {
+            cache.put(
+                cache_key,
+                CachedResult {
+                    kind: verdict.kind.clone(),
+                    channel_a_decision: verdict.channel_a.decision.clone(),
+                    channel_b_decision: verdict.channel_b.decision.clone(),
+                    advisory_tag: verdict.audit.advisory.clone(),
+                },
+            );
+        }
     }
+
+    verdict
 }
-/// Evaluate a prompt through the 1oo2D safety gate.
-///
-/// This function is the safety function boundary. Everything inside is
-/// subject to the high-reliability software requirements of this crate.
-///
-/// Prefer `evaluate_raw` for most callers — it handles normalisation and
-/// the ExceededMaxLength case automatically.
-///
-/// `sequence` is a caller-managed monotonic counter for audit ordering.
-/// Pass 0 if you don't need sequencing.
-pub fn evaluate(input: PromptInput, sequence: u64) -> Verdict {
+
+/// Fallback for single-tenant callers.
+pub fn evaluate_raw(raw: impl Into<String>, sequence: u64) -> Verdict {
+    evaluate_raw_for_tenant(raw, sequence, None)
+}
+/// Evaluate a prompt through the 1oo2D safety gate for a specific tenant.
+pub fn evaluate_for_tenant(input: PromptInput, sequence: u64, tenant_id: Option<&str>) -> Verdict {
     // DC-GAP-05: guard for direct firewall-core callers (mirrors napi SA-021 guard).
     if !is_initialised() {
         return uninitialised_block(sequence, now_ns());
     }
-    orchestrator::evaluate(input, sequence, now_ns)
+    orchestrator::evaluate(input, sequence, tenant_id, now_ns)
+}
+
+/// Fallback for single-tenant evaluation.
+pub fn evaluate(input: PromptInput, sequence: u64) -> Verdict {
+    evaluate_for_tenant(input, sequence, None)
 }
 
 /// Evaluate a batch of raw strings in parallel using Rayon.
@@ -246,9 +346,6 @@ pub fn get_review_stats() -> ReviewStats {
     review::get_review_stats()
 }
 
-pub(crate) fn get_config() -> Option<&'static config::FirewallConfig> {
-    init::get_config()
-}
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 

@@ -47,6 +47,7 @@ fn synthesize_block_verdict(
             ingested_at_ns,
             decided_at_ns,
             ((decided_at_ns - ingested_at_ns) / 1_000).min(u64::MAX as u128) as u64,
+            None,
         ),
     }
 }

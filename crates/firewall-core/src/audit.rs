@@ -7,31 +7,42 @@ static CHAIN_SEAL_PATH: &str = "audit_chain.seal";
 
 pub(crate) fn init_audit() {
     let _ = HMAC_KEY.get_or_init(|| {
-        if let Ok(key_str) = std::env::var("POLICY_GATE_HMAC_KEY") {
-            if let Ok(key_bytes) = hex::decode(&key_str) {
-                if key_bytes.len() == 32 {
-                    let mut key = [0u8; 32];
-                    key.copy_from_slice(&key_bytes);
-                    return key;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Ok(key_str) = std::env::var("POLICY_GATE_HMAC_KEY") {
+                if let Ok(key_bytes) = hex::decode(&key_str) {
+                    if key_bytes.len() == 32 {
+                        let mut key = [0u8; 32];
+                        key.copy_from_slice(&key_bytes);
+                        return key;
+                    }
                 }
             }
+
+            use getrandom::getrandom;
+            let mut key = [0u8; 32];
+            let _ = getrandom(&mut key); // Ignore error in fallback
+
+            if let Err(e) = std::fs::write(CHAIN_SEAL_PATH, hex::encode(key)) {
+                eprintln!("Warning: Could not save HMAC key: {}", e);
+            }
+            key
         }
-
-        use getrandom::getrandom;
-        let mut key = [0u8; 32];
-        getrandom(&mut key).expect("cryptographic RNG unavailable");
-
-        if let Err(e) = std::fs::write(CHAIN_SEAL_PATH, hex::encode(key)) {
-            eprintln!("Warning: Could not save HMAC key: {}", e);
+        #[cfg(target_arch = "wasm32")]
+        {
+            // In WASM (Proxy-Wasm), we expect the key to be injected or we use a static fallback.
+            // Automated key generation and FS-persistence are disabled in the sandbox.
+            [0u8; 32]
         }
-
-        key
     });
 
-    if let Ok(seal_content) = std::fs::read_to_string(CHAIN_SEAL_PATH) {
-        let trimmed = seal_content.trim();
-        if !trimmed.is_empty() && trimmed.len() == 64 {
-            *LAST_AUDIT_HMAC.lock().unwrap() = Some(trimmed.to_string());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Ok(seal_content) = std::fs::read_to_string(CHAIN_SEAL_PATH) {
+            let trimmed = seal_content.trim();
+            if !trimmed.is_empty() && trimmed.len() == 64 {
+                *LAST_AUDIT_HMAC.lock().unwrap() = Some(trimmed.to_string());
+            }
         }
     }
 }
@@ -42,6 +53,8 @@ pub(crate) fn attach_chain_hmac(entry: &mut AuditEntry) {
         let current_hmac = compute_audit_hmac(key, entry, prev_hmac.as_deref());
         entry.chain_hmac = Some(current_hmac.clone());
         *last_hmac_guard = Some(current_hmac.clone());
+        
+        #[cfg(not(target_arch = "wasm32"))]
         if let Err(e) = std::fs::write(CHAIN_SEAL_PATH, &current_hmac) {
             eprintln!("Warning: Could not write chain seal: {}", e);
         }

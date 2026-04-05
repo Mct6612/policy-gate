@@ -21,6 +21,8 @@ Recent revisions:
 
 | Rev  | Date    | Current relevance |
 | ---- | ------- | ----------------- |
+| 2.22 | 2026-04 | Multi-Tenant Policy Hub: Integration of `TENANT_REGISTRY` for isolated policy enforcement. Audit Schema v3: Added `tenant_id` to audit logs for per-tenant forensics. Directory-based loading: Added support for zero-code configuration registries. Fail-closed: Mandated `UnknownTenant` block for missing/unauthorized tenant IDs. |
+| 2.21 | 2026-04 | High-Performance Scaling: Migration to `RegexSet` ($O(1)$ matching) and LRU Caching. Staged Hot-Reload with pre-flight validation. Semantic Hardening: Fast-Semantic 2.0 (128-dim sparse embedding) with advisory/enforcement thresholds. |
 | 2.20 | 2026-03 | Code-structure alignment: init state and startup logic moved to `crates/firewall-core/src/init.rs`; public API remains in `lib.rs`. |
 | 2.19 | 2026-03 | Session-aware layer added with `evaluate_with_session()` and session analysis / cleanup behavior. |
 | 2.18 | 2026-03 | Documentation and verification alignment update for semantic opt-in, conformance corpus, and native wrapper flow. |
@@ -71,6 +73,8 @@ disagreeing, or faulted cases are treated as `Block`.
 | H-13 | Zero-width char splits keyword, bypasses FP-003/FP-004  | Attacker inserts U+200B/U+200C/U+200D between keyword chars                                                                                                                                                                     | SR-014: Zero-width chars blocked in Tokenizing (FP-005) and Channel B (RE-006) before any content check (SA-019) |
 | H-14 | Safety function runs in uninitialised state             | `firewall_evaluate()` called before `firewall_init()` via napi binding                                                                                                                                                          | SR-015: Init guard in napi binding rejects evaluation if init failed or was never called (SA-021)                |
 | H-15 | NFKC-Expansion DoS via expansive codepoints             | Attacker sends payload of expansive Unicode codepoints (e.g. U+FDFB, 3 raw bytes → 18 post-NFKC chars) near the 8 192-byte raw limit, forcing the pipeline to perform full NFKC expansion before the post-NFKC size check fires | SR-017: Pre-NFKC raw byte limit hard-rejects inputs > 8 192 raw bytes before any normalisation work (SA-044)     |
+| H-16 | Cross-tenant evaluation leakage                         | Tenant A evaluates request using cached pattern outcome or policy from Tenant B                                                                                                                                                 | SR-020: Cache partitioning and policy isolation by tenant_id (SA-048)                                            |
+| H-17 | Unauthorized anonymous access                           | API caller omits tenant_id when anonymous access is disabled                                                                                                                                                                    | SR-021: Fail-closed fallback to UnknownTenant block (SA-048)                                                     |
 
 ---
 
@@ -79,8 +83,8 @@ disagreeing, or faulted cases are treated as `Block`.
 ### 3.1 Overview
 
 ```
-prompt ──► [Normalise NFKC] ──► [Channel A: FSM]       ─┐
-                            ├──► [Channel B: RuleEngine] ─┼──► [1oo2D Voter] ──► PASS/BLOCK
+prompt + tenant_id ──► [Tenant Resolution] ──► [Normalise NFKC] ──► [Channel A: FSM]       ─┐
+                                                                ├──► [Channel B: RuleEngine] ─┼──► [1oo2D Voter] ──► PASS/BLOCK
                             └──► [Channel D: Semantic]*  ─┘      │
                                                                  ├──► [Audit Entry + block_reason]
                                                                  │
@@ -206,6 +210,26 @@ python scripts/generate_centroids.py \
 Heuristic scoring channel outside the safety-critical boundary. Runs after the voter. Output stored in `AuditEntry.advisory` as `AdvisoryTag` — never changes Pass/Block verdict. Raises `AdvisoryDisagreement` when voter passes but Channel C scores ≥ 3. Operator review within 72h (SR-008).
 
 Heuristics: H-C01 (special char density), H-C02 (imperative starts), H-C03 (excessive caps), H-C04 (base64-like token), H-C05 (indirection/social engineering), H-C06 (soft persona framing), H-C07 (negation chains), H-C08 (payload noun proximity).
+
+### 3.11 Multi-Tenant Policy Hub (Isolation Invariants)
+
+SA-048: Advanced multi-tenant support for distributed LLM architectures.
+
+#### [NEW] 3.11.1 Tenant Registry Structure
+The system maintains a global `TENANT_REGISTRY` of isolation units. Each unit is a self-contained `FirewallConfig` identified by a unique `tenant_id`.
+
+- **Registry Loading**: Configurations can be loaded individually or via directory-based registration (`init_multi_tenant_registry`).
+- **Fail-Closed Default**: If no `tenant_id` is supplied and `allow_anonymous_tenants` is false, the request is rejected as `UnknownTenant`.
+- **Identity Invariant**: A request for `TenantA` MUST NOT use cached results or patterns from `TenantB`.
+
+#### [NEW] 3.11.2 Evaluation Flow (Multi-Tenant)
+1. **Identify**: Extract `tenant_id` from evaluation request.
+2. **Resolve**: Lookup configuration in the registry.
+3. **Guard**: If resolution fails, synthesize `VerdictKind::Block` with `BlockReason::UnknownTenant`.
+4. **Isolate**: Execute evaluation using ONLY the resolved tenant's configuration and a tenant-specific cache key.
+
+#### [NEW] 3.11.3 Audit Schema V3
+To support multi-tenant forensics and meet SR-013, Audit Schema V3 introduces the mandatory `tenant_id` field. All `AuditEntry` records emitted by the voter include the `tenant_id` used for evaluation, ensuring full isolation during incident response and compliance reporting.
 
 ### 3.7 Channel E — Egress FSM/PII
 
@@ -710,13 +734,16 @@ Session layer significantly improves multi-turn attack detection but remains adv
 | SR-010             | H-09   | Payload keyword blocking FP-003/FP-004                           | `fsm/mod.rs::FORBIDDEN_PATTERNS`                           | PO-A4                | `safety_po_a4_forbidden_patterns_always_block`    |
 | SR-011             | H-10   | NFKC normalisation                                               | `types.rs::PromptInput::normalise`                         | —                    | `prompt_input_*` tests                            |
 | SR-012             | H-11   | Dual-string FP check                                             | `fsm/mod.rs::FsmState::IntentClassify`                     | PO-A4                | `block_injection_*` tests                         |
-| SR-013             | H-12   | `AuditEntry.block_reason` populated                              | `verdict_build.rs`                                         | —                    | `audit_verdict_kind_matches_verdict`              |
+| SR-013             | H-12   | `AuditEntry.block_reason` and `tenant_id` populated (v3)         | `verdict_build.rs`, `types.rs`                             | —                    | `audit_verdict_kind_matches_verdict`, `napi_multi_tenant_*` |
 | SR-014             | H-13   | Zero-width char block FP-005 + RE-006                            | `fsm/mod.rs::has_zero_width_chars`, `rule_engine/rules.rs` | —                    | SA-019 tests                                      |
 | SR-015             | H-14   | Init guard in napi binding                                       | `firewall-napi/src/lib.rs::INIT_RESULT`                    | —                    | OC-01 enforcement (SA-021)                        |
 | SR-016             | H-01   | FP-006 injection marker independence (Channel A blocks directly) | `fsm/mod.rs::FORBIDDEN_PATTERNS[FP-006]`                   | PO-A4                | `fp006_blocks_injection_embedded_after_translate` |
 | SR-017             | H-15   | Pre-NFKC raw byte limit (SA-044)                                 | `types.rs::PromptInput::normalise` Step 0b                 | —                    | `nfkc_expansion_dos_probe`                        |
 | SR-018             | H-01   | Ingress-Egress Consistency (same PromptInput)                    | `egress.rs::evaluate_output`                               | —                    | caller contract / manual review                   |
-| SR-019             | H-16   | Session-Aware-Layer multi-turn detection                         | `session.rs`, `lib.rs::evaluate_with_session`              | —                    | `session_tests`, `session_aware_e2e`              |
+| SR-019             | H-18   | Session-Aware-Layer multi-turn detection                         | `session.rs`, `lib.rs::evaluate_with_session`              | —                    | `session_tests`, `session_aware_e2e`              |
+| SR-020             | H-16   | Cache partitioning and policy isolation by tenant_id (SA-048)    | `registry.rs`, `lib.rs::evaluate_for_tenant`               | —                    | `multi_tenant_*` tests                            |
+| SR-021             | H-17   | Fail-closed fallback to UnknownTenant block (SA-048)             | `lib.rs::evaluate_for_tenant`                              | —                    | `evaluate_rejects_missing_tenant`                 |
+| SR-022             | H-14   | Build-Time Init Token / Race-to-Init prevent (SA-073)            | `init.rs::init_with_token`                                 | —                    | `init_requires_token`                             |
 
 
 ## 7.9 Operation Modes (Shadow Mode)
@@ -761,6 +788,8 @@ The voter's DiagnosticAgreement and DiagnosticDisagreement events provide contin
 | OC-07 | Channel C output must never gate the Pass/Block decision.                                                             | Enforced by architecture: Channel C runs after the voter, result only written to `AuditEntry.advisory`. | SA-008       |
 | OC-08 | Adding a new intent pattern requires: CR → peer review → Z3 re-proof → Safety Manual addendum.                        | Enforced at CI level by `verification/check_pattern_hash.py` test.                                               | SR-005       |
 | OC-09 | The caller MUST pass the same `PromptInput` reference used in the Ingress evaluation to `evaluate_output()`.          | Caller contract (G-35).                                                                                 | SR-018       |
+| OC-10 | Every API call must provide a valid `tenant_id` unless `allow_anonymous_tenants` is explicitly true.                  | Enforced by `evaluate_for_tenant` returning `UnknownTenant` block.                                      | SR-021       |
+| OC-11 | Directory-based tenant registries must follow the strict `[tenant_id]/firewall.toml` directory structure.             | Enforced by `init_multi_tenant_registry` loader structural checks.                                      | Architecture |
 
 **SA-021 note:** Prior to SA-021, `firewall_init()` and `firewall_evaluate()` were independent napi exports with no runtime link. A JS caller could invoke `firewall_evaluate()` without `firewall_init()`, silently bypassing SR-006. SA-021 closes this via `INIT_RESULT: OnceLock<Result<(), String>>` checked at the top of every `firewall_evaluate()` call. The `get_or_init` pattern ensures init is attempted exactly once even if `firewall_init()` was never explicitly called — the first `firewall_evaluate()` triggers it and returns `Err` if it fails. Direct `firewall-core` consumers are also fail-closed in the core crate: `init.rs` owns the init state, and `lib.rs::evaluate()` / `lib.rs::evaluate_raw()` synthesize a Block verdict if init never succeeded.
 
@@ -943,3 +972,50 @@ items would be required for a formal certification effort, which is not planned:
 | SA-068 | **Separator Refinement**. Context-aware stripping logic in `types.rs` to preserve technical terms (API-Key, API.Key.v2.1) while blocking obfuscation (m.a.l.w.a.r.e). Supported separators: `-`, `.`, `_`, `,`, `:`, `!`, `/`, `~`. Only strips when `segment_count > 4 && separator_count > 3` (excessive segmentation detection).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | **Closed**                                                                                                                                                                                                                                                                                                                                                                              |
 | SA-070 | **Red-Team Stress-Testing**: Systematic gap analysis based on 7 attack strategies (Intent Camouflage, Persona Indirection, etc.). Verified via `red_team_tests.rs`. 100% block rate on tested high-value patterns.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Closed                                                                                                                                                                                                                                                                                                                                                                                  |
 | SA-071 | **Contextual Safety Layer**: Sliding window evaluation (N=3) in `evaluate_messages_windowed`. Blocks Strategy 2/3 fragmentation/escalation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Closed                                                                                                                                                                                                                                                                                                                                                                                  |
+---
+
+## 10. Staged Configuration Reload (SA-077)
+
+To ensure high-availability and security integrity during policy updates, `policy-gate` implements a "Staged" hot-reload process.
+
+**Mechanism:**
+1.  **Isolation:** The new `firewall.toml` is loaded into a temporary `FirewallConfig` instance.
+2.  **Pre-flight Validation:** `config.validate()` is executed, checking:
+    *   TOML structural integrity.
+    *   Individual regex syntax.
+    *   Global `RegexSet` compilation compatibility.
+3.  **Atomic Swap:** Only if validation passes is the global `CONFIG_STATE` updated.
+4.  **Fail-Closed Integrity:** If validation fails, the error is logged, a `DiagnosticError` is emitted, and the **previous known-good configuration remains active**.
+
+**Safety Benefit:** Prevents operator errors and configuration corruption from disabling the firewall or causing a crash during production reloads.
+
+## 11. High-Performance Matching & Scaling (SA-078)
+
+The system is optimized for enterprise-scale workloads without compromising safety guarantees.
+
+### 11.1 O(1) Pattern Matching (RegexSet)
+Migration from iterative $O(N)$ matching to `regex::RegexSet` ensures that matching latency remains constant regardless of the number of allowlist entries. This mitigates H-17 (watchdog timeouts due to allowlist growth).
+
+### 11.2 Thread-Safe LRU Caching
+A global, thread-safe LRU cache (default capacity: 1,000) stores security verdicts for normalized prompt inputs.
+*   **Cache Integrity:** Only pure-deterministic verdicts are cached.
+*   **Audit Continuity:** Cache hits still generate full `AuditEntry` records with accurate timestamps and chained HMACs.
+*   **Invalidation:** Any configuration reload automatically clears the entire cache to prevent stale policy enforcement.
+
+## 12. Semantic Hardening (Pillar 3 / SA-050)
+
+Channel D provides a diverse safety layer using learned semantic embeddings.
+
+### 12.1 Fast-Semantic 2.0 Engine
+Unlike Channel A (Regex), Channel D uses a 128-dimensional sparse embedding based on FNV-1a salted 4-gram hashing. This provides a "soft" intent match that is resilient against character-level obfuscation.
+
+### 12.2 Operation Logic
+- **Advisory Mode:** `semantic_threshold` (default 0.70). Tags the audit log but allows Pass.
+- **Enforcement Mode:** `semantic_enforce_threshold` (default 1.0/disabled). Triggers a Hard-Block on high-confidence matches.
+
+### 12.3 Verification Corpus
+Verificaton for SA-050 is based on `verification/semantic_corpus.json`, containing 200+ samples from AdvBench and JailbreakBench.
+
+---
+
+[Revision 2.21 Final - All Hardening Pillars Complete]

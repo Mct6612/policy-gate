@@ -10,7 +10,7 @@
 
 #![deny(clippy::all)]
 
-use firewall_core::{evaluate_messages, evaluate_output, evaluate_raw, init, ChatMessage, PromptInput};
+use firewall_core::{evaluate_messages, evaluate_output, evaluate_raw, evaluate_raw_for_tenant, init, init_multi_tenant_registry, ChatMessage, PromptInput};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use std::sync::OnceLock;
@@ -42,6 +42,20 @@ pub fn firewall_init() -> Option<String> {
     }
 }
 
+/// Initialize the firewall with multiple tenant configurations from a directory.
+/// Returns null on success, error string on failure.
+#[napi]
+pub fn firewall_init_multi_tenant_registry(token: String, dir_path: String) -> Option<String> {
+    let result: &std::result::Result<(), String> = INIT_RESULT.get_or_init(|| {
+        init_multi_tenant_registry(&token, &dir_path)
+            .map_err(|e: firewall_core::FirewallInitError| e.to_string())
+    });
+    match result {
+        Ok(()) => None,
+        Err(e) => Some(e.clone()),
+    }
+}
+
 #[napi(object)]
 pub struct JsEvalInput {
     pub text: String,
@@ -58,6 +72,7 @@ pub struct JsVerdict {
     pub elapsed_us: u32,
     pub input_hash: String,
     pub sequence: u32,
+    pub tenant_id: String,
     /// Populated for all Block verdicts. Empty string on Pass.
     pub block_reason: String,
 }
@@ -103,6 +118,40 @@ pub async fn firewall_evaluate(input: JsEvalInput) -> Result<JsVerdict> {
         elapsed_us: verdict.audit.total_elapsed_us.min(u32::MAX as u64) as u32,
         input_hash: verdict.audit.input_hash,
         sequence: verdict.audit.sequence.min(u32::MAX as u64) as u32,
+        tenant_id: verdict.audit.tenant_id.unwrap_or_else(|| "default".into()),
+        block_reason,
+    })
+}
+
+#[napi]
+pub async fn firewall_evaluate_for_tenant(input: JsEvalInput, tenant_id: String) -> Result<JsVerdict> {
+    let init_ok: &std::result::Result<(), String> = INIT_RESULT.get_or_init(|| {
+        init().map_err(|e: firewall_core::FirewallInitError| e.to_string())
+    });
+    if let Err(e) = init_ok {
+        return Err(napi::Error::from_reason(format!(
+            "firewall not initialised: {}. Call firewall_init() at startup.", e
+        )));
+    }
+
+    let text = input.text;
+    let sequence = input.sequence as u64;
+    let verdict = evaluate_raw_for_tenant(text, sequence, Some(tenant_id));
+
+    let block_reason = verdict.audit.block_reason
+        .as_ref()
+        .map(stable_block_reason)
+        .unwrap_or_default();
+
+    Ok(JsVerdict {
+        kind: stable_verdict_kind(&verdict.kind),
+        is_pass: verdict.is_pass(),
+        channel_a_decision: stable_channel_decision(&verdict.channel_a.decision),
+        channel_b_decision: stable_channel_decision(&verdict.channel_b.decision),
+        elapsed_us: verdict.audit.total_elapsed_us.min(u32::MAX as u64) as u32,
+        input_hash: verdict.audit.input_hash,
+        sequence: verdict.audit.sequence.min(u32::MAX as u64) as u32,
+        tenant_id: verdict.audit.tenant_id.unwrap_or_else(|| "default".into()),
         block_reason,
     })
 }
@@ -121,6 +170,7 @@ fn stable_verdict_kind(k: &firewall_core::VerdictKind) -> String {
         DiagnosticAgreement   => "DiagnosticAgreement".into(),
         DiagnosticDisagreement => "DiagnosticDisagreement".into(),
         EgressBlock           => "EgressBlock".into(),
+        ShadowPass            => "ShadowPass".into(),
     }
 }
 
@@ -134,6 +184,7 @@ fn stable_block_reason(r: &firewall_core::BlockReason) -> String {
         MalformedInput   { detail }     => format!("MalformedInput:{}", detail),
         ProhibitedIntent { intent }     => format!("ProhibitedIntent:{}", stable_intent(intent)),
         SemanticTrigger { similarity, reason } => format!("SemanticTrigger:{:.3}:{}", similarity, reason),
+        UnknownTenant                   => "UnknownTenant".into(),
     }
 }
 
@@ -237,6 +288,7 @@ pub async fn firewall_evaluate_messages(
             elapsed_us: v.audit.total_elapsed_us.min(u32::MAX as u64) as u32,
             input_hash: v.audit.input_hash.clone(),
             sequence: v.audit.sequence.min(u32::MAX as u64) as u32,
+            tenant_id: v.audit.tenant_id.clone().unwrap_or_else(|| "default".into()),
             block_reason,
         }
     }).collect();

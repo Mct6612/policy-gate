@@ -2,61 +2,67 @@
 #
 # Copy to firewall.toml in your working directory to customize the allowlist
 # and forbidden-keyword tables without modifying the firewall-core crate.
+# Or place in a tenants/ directory (e.g., tenants/tenant-a.toml) when using
+# the multi-tenant registry.
 #
 # Safety note: All intent patterns defined here are loaded during init() and
 # validated (regex compile check + Z3 tripwire). A broken regex or pattern
 # count mismatch causes init() to return Err — the firewall will not start.
-#
-# See deployment.md §OC-08: adding a new intent requires peer review.
 
-# ─── Optional: Contextual Safety (Sliding Window) ─────────────────────────────
-#
-# context_window = 3    # Number of recent messages to join and re-evaluate.
-#                       # Default is 3. Set to 1 to disable (equivalent to stateless).
-#                       # Bounded by O(N) evaluation cost.
+# ─── Multi-Tenant Configuration (Pillar 5) ────────────────────────────────────
 
-# ─── Optional: Shadow Mode ────────────────────────────────────────────────────
-#
-# shadow_mode = true    # Dry-run / Observability mode. 
-#                       # When true, the firewall fully evaluates all prompts and
-#                       # calculates whether they should be blocked. However, it
-#                       # will forcefully override the Verdict to "Pass".
-#                       # The audit trail will contain VerdictKind = "ShadowPass"
-#                       # and the exact reason it would have been blocked.
-#                       # Use this for safe trial runs without impacting users.
+# Optional tenant ID for diagnostic traceability and isolation.
+# tenant_id = "tenant-a"
 
-# ─── Optional: extend or replace the built-in forbidden keywords ──────────────
-#
-# [forbidden_keywords]
-# These keywords are checked in BOTH channels (Channel A FP-003 / Channel B RE-004).
-# Adding a keyword here extends the built-in set; it does NOT remove built-in keywords.
-#
-# extra_attack_verbs = [
-#     "exfiltrate",
-#     "weaponize",
-# ]
-#
-# ─── Optional: additional intent patterns ─────────────────────────────────────
-#
+# If false (default), requests without a valid tenant ID are rejected.
+# allow_anonymous_tenants = false
+
+# Optional list of permitted intents for this configuration (multi-tenant profile).
+# If omitted, all matched intents are permitted by default.
+# permitted_intents = ["QuestionFactual", "TaskCodeGeneration"]
+
+# ─── Content Filtering ────────────────────────────────────────────────────────
+
+# Optional list of additional forbidden keywords.
+# These are checked in BOTH safety channels (Channel A and Channel B).
+# forbidden_keywords = ["internal-api-key", "secret-key-123"]
+
+# ─── Custom Intent Patterns ───────────────────────────────────────────────────
+# Use IP-2xx range for custom intents.
+
 # [[intents]]
-# id     = "IP-200"             # Use IP-2xx range for custom intents
-# intent = "QuestionFactual"    # Must match a MatchedIntent variant in types.rs
+# id     = "IP-200"
+# intent = "QuestionFactual"
 # regex  = "(?i)\\b(diagnose|symptoms of|treatment for)\\b.{0,200}\\?"
-#
+
 # [[intents]]
 # id     = "IP-201"
 # intent = "TaskCodeGeneration"
 # regex  = "(?i)\\b(refactor|optimise|optimize|debug)\\b.{0,80}\\b(function|class|module)\\b"
-#
+
+# ─── Operational Controls ─────────────────────────────────────────────────────
+
+# Lookback window for contextual evaluation (Red-Team Strategy 3).
+# Default is 3 if not specified.
+# context_window = 3
+
+# Shadow Mode: evaluates inputs but allows them to pass even if blocked.
+# shadow_mode = false
+
+# Audit detail level: "basic" (default) or "detailed" (for side-by-side analysis).
+# audit_detail_level = "basic"
+
+# ─── Semantic Analysis (Channel D - Feature: semantic) ─────────────────────────
+
+# semantic_threshold = 0.70         # Similarity score to trigger advisory tagging.
+# semantic_enforce_threshold = 1.0  # Similarity score to trigger a Hard-Block.
+# semantic_model_path = "models/all-MiniLM-L6-v2.onnx"
+# tokenizer_path = "models/tokenizer.json"
+
 # ─── Notes ────────────────────────────────────────────────────────────────────
 #
 # • The built-in 12 patterns (IP-001 … IP-099) are always loaded first.
-#   Custom patterns are appended after them (first-match wins in Channel A).
-# • Custom intents are NOT verified by Z3 — they bypass all Z3 proof obligations.
-#   The operator is fully responsible for the security properties of custom patterns.
-#   You MUST manually verify custom patterns with Z3 before deployment.
-#   Misconfigured patterns can introduce prompt injection vulnerabilities.
-# • After adding custom patterns, run the FP-rate test to verify no regressions:
-#     python verification/fp_rate_test.py
-# • The Z3 tripwire test checks EXPECTED_PATTERN_COUNT. If you add custom
-#   intents, update the constant in intent_patterns.rs and the Z3 model.
+# • Custom patterns are NOT verified by Z3 — the operator is fully responsible
+#   for the security properties of custom patterns.
+# • To reload configurations in a multi-tenant environment, call:
+#   init_multi_tenant_registry(token, "/etc/policy-gate/tenants/")

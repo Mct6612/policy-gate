@@ -621,6 +621,7 @@ static PATTERN_REFS: [&IntentPattern; 25] = [
 ];
 
 static CUSTOM_PATTERNS: OnceLock<Vec<IntentPattern>> = OnceLock::new();
+static REGEX_SET: OnceLock<regex::RegexSet> = OnceLock::new();
 
 pub fn intent_patterns() -> Vec<&'static IntentPattern> {
     let mut patterns: Vec<&'static IntentPattern> = PATTERN_REFS.to_vec();
@@ -634,17 +635,30 @@ pub fn set_custom_patterns(patterns: Vec<IntentPattern>) {
     let _ = CUSTOM_PATTERNS.set(patterns);
 }
 
+pub fn get_regex_set() -> &'static regex::RegexSet {
+    REGEX_SET.get().expect("RegexSet not initialised. Call startup_self_test() first.")
+}
+
 pub fn startup_self_test() -> Result<(), Vec<String>> {
     // Step 1: verify all patterns compile (returns errors without panicking).
-    let errors: Vec<String> = intent_patterns()
+    let patterns = intent_patterns();
+    let errors: Vec<String> = patterns
         .iter()
         .filter_map(|p| p.verify_compile().err())
         .collect();
     if !errors.is_empty() {
         return Err(errors);
     }
-    // Step 2: warm the OnceLock cache for every pattern.
-    for p in intent_patterns() {
+
+    // Step 2: Build the global RegexSet for O(1) multi-pattern matching.
+    // This allows Channel A to find all matches in a single pass over the input.
+    let regex_sources: Vec<&str> = patterns.iter().map(|p| p.regex_src.as_ref()).collect();
+    let _ = REGEX_SET.get_or_init(|| {
+        regex::RegexSet::new(regex_sources).expect("RegexSet compilation failed after individual verification")
+    });
+
+    // Step 3: warm the OnceLock cache for every pattern.
+    for p in patterns {
         p.warm();
     }
     Ok(())

@@ -64,6 +64,7 @@ export interface AuditEntry {
   verdictKind: VerdictKind;
   /** SHA-256 hex of normalised input. Never log the raw input in production. */
   inputHash: string;
+  tenantId: string;
 }
 
 export interface Verdict {
@@ -75,6 +76,7 @@ export interface Verdict {
   audit: AuditEntry;
   /** Populated for blocking verdicts. */
   blockReason?: string;
+  tenantId: string;
 }
 
 export interface ChatMessage {
@@ -139,6 +141,19 @@ export class Firewall {
   }
 
   /**
+   * Factory method for multi-tenant deployments.
+   * Loads all .toml configurations from the specified directory.
+   */
+  static async createMultiTenant(token: string, dirPath: string, opts: FirewallOptions = {}): Promise<Firewall> {
+    const native = await loadNative();
+    const initResult = native.initMultiTenantRegistry(token, dirPath);
+    if (initResult !== null) {
+      throw new FirewallInitError(`Multi-tenant registry init failed: ${initResult}`);
+    }
+    return new Firewall(native, opts);
+  }
+
+  /**
    * Evaluate a prompt through the 1oo2D safety gate.
    *
    * @param text  Raw prompt text (will be normalised by Rust core)
@@ -153,6 +168,37 @@ export class Firewall {
     const verdict = mapVerdict(rawVerdict);
 
     // Async side-effects (non-blocking, non-safety-critical)
+    if (this.opts.onAudit) {
+      this.opts.onAudit(verdict.audit).catch(err => {
+        console.error('[firewall] audit callback error:', err);
+      });
+    }
+
+    if (
+      verdict.kind === 'DiagnosticDisagreement' &&
+      this.opts.onDisagreement
+    ) {
+      this.opts.onDisagreement(verdict).catch(err => {
+        console.error('[firewall] disagreement callback error:', err);
+      });
+    }
+
+    return verdict;
+  }
+
+  /**
+   * Evaluate a prompt for a specific tenant.
+   *
+   * @param tenantId The ID of the tenant whose policy should be applied
+   * @param text     Raw prompt text
+   * @param role     Optional role tag
+   * @returns        Verdict
+   */
+  async evaluateForTenant(tenantId: string, text: string, role?: string): Promise<Verdict> {
+    const seq = Number(this.sequence++);
+    const rawVerdict = await this.native.evaluateForTenant({ text, role: role ?? undefined, sequence: seq }, tenantId);
+    const verdict = mapVerdict(rawVerdict);
+
     if (this.opts.onAudit) {
       this.opts.onAudit(verdict.audit).catch(err => {
         console.error('[firewall] audit callback error:', err);
@@ -246,7 +292,9 @@ export class FirewallEvaluationError extends Error {
 
 interface NativeFirewall {
   init(): string | null;
+  initMultiTenantRegistry(token: string, dirPath: string): string | null;
   evaluate(input: { text: string; role?: string; sequence: number }): Promise<RawVerdict>;
+  evaluateForTenant(input: { text: string; role?: string; sequence: number }, tenantId: string): Promise<RawVerdict>;
   evaluateMessages(messages: ChatMessage[], baseSequence: number): Promise<RawConversationVerdict>;
   evaluateOutput(prompt: string, response: string, sequence: number): Promise<RawEgressVerdict>;
 }
@@ -260,6 +308,7 @@ interface RawVerdict {
   elapsedUs?: number;
   inputHash?: string;
   sequence?: number;
+  tenantId?: string;
   blockReason?: string;
   audit?: {
     sequence: number;
@@ -268,6 +317,7 @@ interface RawVerdict {
     totalElapsedUs: number;
     verdictKind: VerdictKind;
     inputHash: string;
+    tenantId: string;
   };
 }
 
@@ -293,7 +343,9 @@ async function loadNative(): Promise<NativeFirewall> {
     const native = require('../native/index.node');
     return {
       init: native.firewallInit.bind(native),
+      initMultiTenantRegistry: native.firewallInitMultiTenantRegistry.bind(native),
       evaluate: native.firewallEvaluate.bind(native),
+      evaluateForTenant: native.firewallEvaluateFor_tenant ? native.firewallEvaluateFor_tenant.bind(native) : native.firewallEvaluateForTenant.bind(native),
       evaluateMessages: native.firewallEvaluateMessages.bind(native),
       evaluateOutput: native.firewallEvaluateOutput.bind(native),
     };
@@ -311,6 +363,7 @@ function mapVerdict(raw: RawVerdict): Verdict {
     totalElapsedUs: raw.elapsedUs ?? 0,
     verdictKind: raw.kind,
     inputHash: raw.inputHash ?? '',
+    tenantId: raw.tenantId ?? 'default',
   };
   const channelA = raw.channelA ?? parseStableChannelDecision('A', raw.channelADecision ?? 'Fault:InternalPanic', raw.elapsedUs ?? audit.totalElapsedUs, raw.blockReason);
   const channelB = raw.channelB ?? parseStableChannelDecision('B', raw.channelBDecision ?? 'Fault:InternalPanic', raw.elapsedUs ?? audit.totalElapsedUs, raw.blockReason);
@@ -321,6 +374,7 @@ function mapVerdict(raw: RawVerdict): Verdict {
     channelA,
     channelB,
     audit,
+    tenantId: audit.tenantId,
     blockReason:
       raw.kind === 'Block' || raw.kind === 'DiagnosticDisagreement'
         ? raw.blockReason

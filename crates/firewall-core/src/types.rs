@@ -872,10 +872,14 @@ pub enum BlockReason {
         intent: MatchedIntent,
     },
     /// The input was flagged by semantic analysis (Channel D).
+    /// SA-050: detailed semantic reason in Cow to avoid allocation.
     SemanticTrigger {
         similarity: f32,
         reason: std::borrow::Cow<'static, str>,
     },
+    /// The request arrived without a valid tenant ID and anonymous access is disabled.
+    /// (Pillar 5: Multi-Tenant Policy Hub)
+    UnknownTenant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -980,11 +984,9 @@ pub enum AuditDetailLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
     /// Schema version — bump when adding/removing fields to enable migration detection.
-    /// Consumers MUST check this field before deserialising. Current version: 2.
-    ///
-    /// Changelog:
     /// - v1: Initial schema
     /// - v2: Added channel_a_result, channel_b_result, audit_detail_level fields
+    /// - v3: Added tenant_id field for Pillar 5 multi-tenant support
     pub schema_version: u16,
     pub sequence: u64,
     pub ingested_at_ns: u128,
@@ -1026,6 +1028,8 @@ pub struct AuditEntry {
     /// SA-XXX (v2): Detail level for this audit entry.
     /// Determines whether channel results are populated.
     pub audit_detail_level: AuditDetailLevel,
+    /// (v3): Tenant ID for multi-tenant isolation and auditing.
+    pub tenant_id: Option<String>,
 }
 
 impl AuditEntry {
@@ -1044,9 +1048,10 @@ impl AuditEntry {
         ingested_at_ns: u128,
         decided_at_ns: u128,
         total_elapsed_us: u64,
+        tenant_id: Option<String>,
     ) -> Self {
         Self {
-            schema_version: 2,
+            schema_version: 3,
             sequence,
             ingested_at_ns,
             decided_at_ns,
@@ -1062,10 +1067,11 @@ impl AuditEntry {
             channel_a_result: None,
             channel_b_result: None,
             audit_detail_level: AuditDetailLevel::Basic,
+            tenant_id,
         }
     }
 
-    /// Create a Detailed audit entry (v2 schema, includes channel results).
+    /// Create a Detailed audit entry (v3 schema, includes channel results).
     #[allow(clippy::too_many_arguments)]
     pub fn detailed(
         sequence: u64,
@@ -1082,9 +1088,10 @@ impl AuditEntry {
         total_elapsed_us: u64,
         channel_a_result: ChannelResult,
         channel_b_result: ChannelResult,
+        tenant_id: Option<String>,
     ) -> Self {
         Self {
-            schema_version: 2,
+            schema_version: 3,
             sequence,
             ingested_at_ns,
             decided_at_ns,
@@ -1100,6 +1107,7 @@ impl AuditEntry {
             channel_a_result: Some(channel_a_result),
             channel_b_result: Some(channel_b_result),
             audit_detail_level: AuditDetailLevel::Detailed,
+            tenant_id,
         }
     }
 

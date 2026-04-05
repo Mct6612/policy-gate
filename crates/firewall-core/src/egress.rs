@@ -55,6 +55,7 @@ pub(crate) fn evaluate_output(
     prompt: &PromptInput,
     response: &str,
     sequence: u64,
+    tenant_id: Option<&str>,
 ) -> EgressVerdict {
     let channel_e = crate::fsm::egress::ChannelE::evaluate(prompt, response);
     let channel_f = crate::rule_engine::egress::ChannelF::evaluate(prompt, response);
@@ -66,7 +67,7 @@ pub(crate) fn evaluate_output(
 
     let egress_reason = egress_reason(&channel_e, &channel_f, &verdict_kind);
 
-    if crate::init::get_config().and_then(|c| c.shadow_mode).unwrap_or(false)
+    if crate::init::get_config_for_tenant(tenant_id).and_then(|c| c.shadow_mode).unwrap_or(false)
         && verdict_kind == VerdictKind::EgressBlock
     {
         verdict_kind = VerdictKind::ShadowPass;
@@ -86,6 +87,7 @@ pub(crate) fn evaluate_output(
         prompt.ingested_at_ns,
         decided_ns,
         ((decided_ns - prompt.ingested_at_ns) / 1_000).min(u64::MAX as u128) as u64,
+        tenant_id.map(|s| s.to_string()),
     );
 
     attach_chain_hmac(&mut audit);

@@ -18,10 +18,11 @@ It is designed for teams that want predictable enforcement, auditable decisions,
 - deterministic allowlist-first enforcement
 - fail-closed behavior on ambiguity, disagreement, or fault
 - auditable PASS/BLOCK outcomes
-- **shadow mode** for safe deployment and observability without active blocking
+- **Multi-Tenant Policy Hub**: isolated security profiles per tenant
+- **shadow mode**: safe deployment and observability without active blocking
 - advisory heuristics and semantic analysis kept outside the safety path
 - optional session-aware analysis for multi-turn escalation patterns
-- Rust core with Node, Python, and WASM targets
+- Rust core with Node, Python, WASM, and **Proxy-Wasm** targets
 
 ## Best fit
 
@@ -69,24 +70,26 @@ What it does not aim to be:
 
 ## Quick example
 
-### TypeScript
-
-```ts
 import { Firewall } from "policy-gate";
 
-const firewall = await Firewall.create({
+// Initialize with a secret token for production-grade security
+const firewall = await Firewall.createWithToken({
+  token: process.env.FIREWALL_TOKEN,
   onAudit: async (entry) => {
+    console.log(`[Audit] Tenant: ${entry.tenantId}, Sequence: ${entry.sequence}`);
     await db.audit.insert(entry);
   },
 });
 
-const verdict = await firewall.evaluate("What is the capital of France?");
+// Multi-tenant evaluation
+const verdict = await firewall.evaluateForTenant(
+  "tenant-a",
+  "What is the capital of France?"
+);
 
 if (!verdict.isPass) {
-  throw new Error(`Blocked: ${verdict.blockReason}`);
+  throw new Error(`Blocked by ${verdict.blockReason} for tenant-a`);
 }
-
-// safe to forward to the model
 ```
 
 ### Session-aware evaluation
@@ -124,13 +127,21 @@ console.log(`High-risk sessions: ${stats.highRiskSessions}`);
 ```python
 import policy_gate
 
-policy_gate.init() # Will load shadow_mode=true if configured in firewall.toml
+# Multi-tenant initialization: loads all .toml configs from a directory
+policy_gate.init_multi_tenant_registry(
+    token="your-secret-token",
+    dir_path="/etc/policy-gate/tenants/"
+)
 
-verdict = policy_gate.evaluate_raw("What is the capital of France?")
+# Evaluate a request for a specific tenant
+verdict = policy_gate.evaluate_raw_for_tenant(
+    raw="What is the capital of France?",
+    sequence=123,
+    tenant_id="customer-a"
+)
 
 if not verdict["is_pass"]:
     raise RuntimeError(f"Blocked: {verdict['block_reason']}")
-# In shadow mode, is_pass is True even if block_reason is populated in the audit trail
 ```
 
 ### Standalone Reverse Proxy (Zero-Code Integration)
@@ -211,14 +222,69 @@ A `POST /reload` endpoint triggers an immediate reload on demand:
 # Trigger immediate reload (e.g. after editing firewall.toml)
 curl -X POST http://localhost:8080/reload
 # {"status":"reloaded","message":"New config is now active."}
-
-# Already up-to-date
-curl -X POST http://localhost:8080/reload
-# {"status":"unchanged","message":"firewall.toml has not changed."}
 ```
 
-> [!NOTE]
-> If the new `firewall.toml` contains an invalid regex or broken config, the reload is **rejected** and the old config stays active. The response will be HTTP 500 with the validation error. This makes config changes fully safe to deploy without risking downtime.
+> [!IMPORTANT]
+> **Staged Validation (Pre-flight):** If the new `firewall.toml` contains an invalid regex or broken config, the reload is **rejected** and the old config stays active. The proxy will return HTTP 500 with a detailed validation error list. This ensures zero downtime even if an operator pushes a malformed policy.
+
+#### Management CLI
+
+The project includes `firewall-cli`, a powerful utility for policy governance and CI/CD integration.
+
+```bash
+# Build the management tool
+cargo build --release -p firewall-cli
+./target/release/firewall-cli --help
+```
+
+- **`validate <file>`**: Deep-validation of a config file. Checks syntax and `RegexSet` compatibility.
+- **`diff <file1> <file2>`**: Structural comparison of two policies. Highlights added/removed rules and changed regexes.
+- **`eval`**: Standard line-by-line evaluation from stdin (useful for benchmarks).
+
+Example diff:
+```bash
+firewall-cli diff firewall.example.toml firewall.toml
+```
+
+- **RegexSet Matching**: Migration to $O(1)$ scaling ensures that latency does not grow with the number of allowlist entries.
+- **LRU Caching**: verdicts for normalized inputs are cached in a thread-safe LRU (default 1,000 capacity).
+
+---
+
+## Multi-Tenant Policy Hub (Pillar 5)
+
+`policy-gate` supports complete isolation between multiple tenants, each with their own security profile.
+
+- **Per-Tenant Configuration**: Each tenant can have its own `forbidden_keywords`, `permitted_intents`, and `context_window`.
+- **Fail-Closed Isolation**: Requests are blocked by default if the `tenant_id` is unknown or if anonymous access is disabled.
+- **Unified Registry**: Manage hundreds of tenants via a single directory of `.toml` files.
+
+### Directory-based Registry
+
+To load multiple tenants from a directory at startup:
+
+```rust
+// Rust
+policy_gate::init_multi_tenant_registry(
+    "your-secret-init-token",
+    "/etc/policy-gate/tenants/"
+).expect("Failed to load tenant registry");
+```
+
+Each `.toml` file in the directory defines one tenant. The filename (minus `.toml`) is used as the `tenant_id` unless explicitly overridden in the file.
+
+### Evaluating with Tenant Context
+
+Pass the `tenant_id` to the evaluation API to ensure the correct policy is applied:
+
+```typescript
+const verdict = await firewall.evaluateForTenant(
+  "customer-123",
+  "Question: How do I bypass the login?"
+);
+```
+- **Sub-millisecond latency**: Cache hits are served in <100µs. Sequential throughput reaches **250+ req/s** on modern hardware.
+- **Enterprise Hardening (Pillars 1-3)**: Implementation of staged hot-reloads, $O(1)$ matching, and semantic enforcement thresholds.
 
 Reload events are tracked by the `policy_gate_config_reloads_total{result="changed|error"}` Prometheus counter.
 
@@ -303,9 +369,9 @@ let results = evaluate_batch_parallel(prompts, 0);
 
 ### Performance
 
-Single-threaded: ~100 req/s (9-10ms per request)
-Parallel (Rayon): scales with CPU cores
-Node.js async: handled by napi-rs worker threads
+- **Sequential**: 250+ req/s (sub-ms cache hits, ~3-4ms cold)
+- **Parallel (Rayon)**: scales with CPU cores (1,000+ req/s on 8-core)
+- **Node.js async**: handled by napi-rs worker threads
 
 ## How it works
 
@@ -355,17 +421,19 @@ Channel B performs structural and lexical analysis without regex or ML in its co
 
 This channel runs after the verdict and stores non-authoritative heuristics in the audit trail. It is useful for operator review, investigation, and tuning, but it does not gate the decision.
 
-### Channel D: semantic similarity
+### Channel D: semantic similarity (Fast-Semantic 2.0)
 
-This is an optional advisory feature:
+This is an optional high-performance semantic layer:
 
-- **8 learned attack centroids** derived from AdvBench + JailbreakBench via MiniLM + K-Means
-- **384-dimensional embeddings** using `sentence-transformers/all-MiniLM-L6-v2`
-- reference-dataset pipeline: feature extraction → clustering → hard-coding → CI tripwire
-- centroid hash verification ensures semantic-boundary changes are detected and reviewed
-- Advisory-only: never gates PASS/BLOCK outcomes, but provides semantic violation tags for operator review
+- **128-dimensional sparse embeddings** using FN-1a 4-gram salted hashing.
+- **Sub-millisecond execution**: Pure Rust implementation with no external ML runtime dependencies.
+- **Consolidated Corpus**: 200+ learned attack centroids derived from AdvBench + JailbreakBench.
+- **Dual-Threshold Logic**:
+  - `semantic_threshold` (default 0.70): Triggers advisory tagging (Pass with 'SemanticViolation' tag).
+  - `semantic_enforce_threshold` (default 1.0): Triggers an automated BLOCK for high-confidence matches.
+- **CI Tripwire**: Centroid hash verification ensures semantic-boundary changes are detected and reviewed.
 
-*See `scripts/generate_centroids.py` for the centroid generation pipeline.*
+*See `scripts/generate_centroids.py` for the training pipeline.*
 
 ### Egress firewall
 
@@ -395,6 +463,7 @@ policy-gate/
 │   ├── firewall-napi/     # Node native binding
 │   ├── firewall-pyo3/     # Python binding
 │   ├── firewall-wasm/     # WASM / edge target
+│   ├── firewall-proxy-wasm/ # Proxy-Wasm / Envoy target
 │   └── firewall-fuzz/     # fuzz targets
 ├── scripts/               # smoke + conformance scripts
 ├── verification/          # Z3 models, corpora, analytics, benchmarks

@@ -41,7 +41,9 @@ use tokio::net::TcpListener;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 
-use firewall_core::{evaluate, evaluate_output, next_sequence, try_reload_config, PromptInput};
+use firewall_core::{
+    evaluate_for_tenant, evaluate_output_for_tenant, next_sequence, try_reload_config, PromptInput,
+};
 
 // ─── Shared state ─────────────────────────────────────────────────────────────
 
@@ -170,12 +172,14 @@ async fn handle_chat_completion(
     };
 
     // 4. Ingress evaluation
+    let tenant_id = headers.get("x-tenant-id").and_then(|h| h.to_str().ok());
     info!(
-        "Evaluating ingress prompt ({} bytes)",
-        combined_messages.len()
+        "Evaluating ingress prompt ({} bytes) for tenant: {:?}",
+        combined_messages.len(),
+        tenant_id.unwrap_or("anonymous")
     );
     let sequence = next_sequence();
-    let verdict = evaluate(prompt_input.clone(), sequence);
+    let verdict = evaluate_for_tenant(prompt_input.clone(), sequence, tenant_id);
 
     if !verdict.is_pass() {
         let reason = verdict
@@ -232,7 +236,7 @@ async fn handle_chat_completion(
     // 6. Egress evaluation on the response content
     if let Some(response_text) = extract_response_content(&resp_json) {
         info!("Evaluating egress response...");
-        match evaluate_output(&prompt_input, &response_text, sequence) {
+        match evaluate_output_for_tenant(&prompt_input, &response_text, sequence, tenant_id) {
             Ok(egress_verdict) => {
                 if !egress_verdict.is_pass() {
                     warn!("Egress blocked: {:?}", egress_verdict.kind);

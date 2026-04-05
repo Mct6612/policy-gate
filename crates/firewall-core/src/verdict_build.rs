@@ -60,6 +60,7 @@ pub(crate) fn build_final_verdict(
     #[cfg(feature = "semantic")] semantic_similarity: Option<f32>,
     #[cfg(not(feature = "semantic"))] _semantic_similarity: Option<f32>,
     audit_detail_level: AuditDetailLevel,
+    tenant_id: Option<String>,
 ) -> Verdict {
     let block_reason = block_reason(&verdict_kind, &channel_a, &channel_b);
     let input_hash = sha256_hex(&input.text);
@@ -83,6 +84,7 @@ pub(crate) fn build_final_verdict(
             total_us,
             channel_a.clone(),
             channel_b.clone(),
+            tenant_id.clone(),
         ),
         AuditDetailLevel::Basic => AuditEntry::basic(
             sequence,
@@ -100,6 +102,7 @@ pub(crate) fn build_final_verdict(
             input.ingested_at_ns,
             decided_ns,
             total_us,
+            tenant_id,
         ),
     };
 
@@ -119,4 +122,62 @@ pub(crate) fn build_final_verdict(
 
     track_review_item(&final_verdict);
     final_verdict
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_final_verdict_from_cache(
+    raw: &str,
+    sequence: u64,
+    verdict_kind: VerdictKind,
+    advisory_tag: AdvisoryTag,
+    decided_ns: u128,
+    total_us: u64,
+    channel_a_decision: ChannelDecision,
+    channel_b_decision: ChannelDecision,
+    audit_detail_level: AuditDetailLevel,
+    tenant_id: Option<String>,
+) -> Verdict {
+    let channel_a = ChannelResult {
+        channel: crate::types::ChannelId::A,
+        decision: channel_a_decision,
+        elapsed_us: 0, // Cached hit
+        similarity: None,
+    };
+    let channel_b = ChannelResult {
+        channel: crate::types::ChannelId::B,
+        decision: channel_b_decision,
+        elapsed_us: 0, // Cached hit
+        similarity: None,
+    };
+
+    let block_reason = block_reason(&verdict_kind, &channel_a, &channel_b);
+    let input_hash = sha256_hex(raw);
+
+    let audit = match audit_detail_level {
+        AuditDetailLevel::Detailed | AuditDetailLevel::Basic => AuditEntry::basic(
+            sequence,
+            verdict_kind.clone(),
+            block_reason,
+            input_hash,
+            advisory_tag,
+            None,
+            None,
+            None,
+            None,
+            decided_ns - (total_us as u128 * 1_000), // Approximate ingested_at
+            decided_ns,
+            total_us,
+            tenant_id,
+        ),
+    };
+
+    let mut final_audit = audit;
+    attach_chain_hmac(&mut final_audit);
+
+    Verdict {
+        kind: verdict_kind,
+        channel_a,
+        channel_b,
+        channel_d: None, // Semantic channel is bypassed on cache hit
+        audit: final_audit,
+    }
 }

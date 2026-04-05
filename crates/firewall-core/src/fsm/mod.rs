@@ -95,9 +95,12 @@ impl Clock for MockClock {
 pub struct ChannelA;
 
 impl ChannelA {
-    pub fn evaluate(input: &crate::types::PromptInput) -> ChannelResult {
+    pub fn evaluate(
+        input: &crate::types::PromptInput,
+        config: Option<&crate::config::FirewallConfig>,
+    ) -> ChannelResult {
         let clock = WallClock::now();
-        let decision = run_fsm(input, &clock);
+        let decision = run_fsm(input, &clock, config);
         let elapsed_us = clock.elapsed_us();
         ChannelResult {
             channel: ChannelId::A,
@@ -112,8 +115,9 @@ impl ChannelA {
     pub fn evaluate_with_clock(
         input: &crate::types::PromptInput,
         clock: &dyn Clock,
+        config: Option<&crate::config::FirewallConfig>,
     ) -> ChannelResult {
-        let decision = run_fsm(input, clock);
+        let decision = run_fsm(input, clock, config);
         let elapsed_us = clock.elapsed_us();
         ChannelResult {
             channel: ChannelId::A,
@@ -124,7 +128,11 @@ impl ChannelA {
     }
 }
 
-fn run_fsm(input: &crate::types::PromptInput, clock: &dyn Clock) -> ChannelDecision {
+fn run_fsm(
+    input: &crate::types::PromptInput,
+    clock: &dyn Clock,
+    config: Option<&crate::config::FirewallConfig>,
+) -> ChannelDecision {
     let text = &input.text;
     let mut state = FsmState::Init;
 
@@ -254,8 +262,8 @@ fn run_fsm(input: &crate::types::PromptInput, clock: &dyn Clock) -> ChannelDecis
                     }
                 }
                 // SA-048: Check for custom forbidden keywords from firewall.toml
-                if let Some(config) = crate::get_config() {
-                    if let Some(keywords) = &config.forbidden_keywords {
+                if let Some(cfg) = config {
+                    if let Some(keywords) = &cfg.forbidden_keywords {
                         let lower_recon = reconstructed.to_lowercase();
                         let lower_text = text.to_lowercase();
                         for kw in keywords {
@@ -279,14 +287,28 @@ fn run_fsm(input: &crate::types::PromptInput, clock: &dyn Clock) -> ChannelDecis
             // Allowlist matching on the reconstructed string.
             FsmState::PatternMatch { ref tokens } => {
                 let reconstructed = tokens.join(" ");
-                for pattern in intent_patterns() {
-                    // Watchdog check inside the loop to catch slow/complex regex matches mid-phase.
-                    if clock.elapsed_us() >= WATCHDOG_DEADLINE_US {
-                        return ChannelDecision::Fault {
-                            code: FaultCode::WatchdogFired,
-                        };
-                    }
-                    if pattern.matches(&reconstructed) {
+                let patterns = intent_patterns();
+                let set = intent_patterns::get_regex_set();
+
+                // Watchdog check before multi-pattern match.
+                if clock.elapsed_us() >= WATCHDOG_DEADLINE_US {
+                    return ChannelDecision::Fault {
+                        code: FaultCode::WatchdogFired,
+                    };
+                }
+
+                // O(1) multi-pattern match: find all matching indices in one pass.
+                let matches = set.matches(&reconstructed);
+                if matches.matched_any() {
+                    for idx in matches {
+                        // Check if the specific pattern match also passes its post-match guard.
+                        let pattern = patterns[idx];
+                        if let Some(guard) = pattern.post_match_guard {
+                            if !guard(&reconstructed) {
+                                continue; // Skip to next match in the set
+                            }
+                        }
+                        // Both regex match and guard passed.
                         return ChannelDecision::Pass {
                             intent: pattern.intent.clone(),
                         };

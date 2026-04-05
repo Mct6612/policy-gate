@@ -49,9 +49,12 @@ impl ChannelB {
     /// NFKC, combining-mark stripping, confusable normalisation, and separator-strip
     /// (SA-003, SA-029, SA-038, SA-045). Use `evaluate_raw()` or `evaluate()` from
     /// `lib.rs` for the full pipeline.
-    pub fn evaluate(input: &crate::types::PromptInput) -> ChannelResult {
+    pub fn evaluate(
+        input: &crate::types::PromptInput,
+        config: Option<&crate::config::FirewallConfig>,
+    ) -> ChannelResult {
         let start = Instant::now();
-        let decision = run_rules(input, &start);
+        let decision = run_rules(input, &start, config);
         // as_micros() returns u128; saturating cast to u64 (overflow at ~584k years).
         let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
         ChannelResult {
@@ -63,7 +66,11 @@ impl ChannelB {
     }
 }
 
-fn run_rules(input: &crate::types::PromptInput, start: &Instant) -> ChannelDecision {
+fn run_rules(
+    input: &crate::types::PromptInput,
+    start: &Instant,
+    config: Option<&crate::config::FirewallConfig>,
+) -> ChannelDecision {
     let text = &input.text;
 
     // SA-048: Obfuscation check (Diversity).
@@ -75,6 +82,22 @@ fn run_rules(input: &crate::types::PromptInput, start: &Instant) -> ChannelDecis
                 detail: "obfuscation characters detected".into(),
             },
         };
+    }
+
+    // SA-048: Check for custom forbidden keywords from firewall.toml
+    if let Some(cfg) = config {
+        if let Some(keywords) = &cfg.forbidden_keywords {
+            let lower_text = text.to_lowercase();
+            for kw in keywords {
+                if lower_text.contains(&kw.to_lowercase()) {
+                    return ChannelDecision::Block {
+                        reason: BlockReason::ForbiddenPattern {
+                            pattern_id: "CUSTOM-FORBIDDEN-KEYWORD-B".into(),
+                        },
+                    };
+                }
+            }
+        }
     }
 
     for rule in RULE_TABLE {

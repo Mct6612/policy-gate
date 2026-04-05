@@ -1,7 +1,7 @@
 use crate::advisory;
 use crate::config;
 use crate::fsm::ChannelA;
-use crate::init::{active_profile_intents, get_config};
+use crate::init::get_config_for_tenant;
 use crate::rule_engine::ChannelB;
 use crate::types::{
     AuditDetailLevel, BlockReason, ChannelDecision, PromptInput, Verdict, VerdictKind,
@@ -13,6 +13,7 @@ fn apply_profile_filter(
     verdict_kind: &mut VerdictKind,
     channel_a: &mut crate::ChannelResult,
     channel_b: &mut crate::ChannelResult,
+    config: Option<&config::FirewallConfig>,
 ) {
     if !matches!(
         verdict_kind,
@@ -21,7 +22,7 @@ fn apply_profile_filter(
         return;
     }
 
-    if let Some(permitted) = active_profile_intents() {
+    if let Some(permitted) = config.and_then(|c| c.permitted_intents.as_ref()) {
         let matched_intent = match &channel_a.decision {
             ChannelDecision::Pass { intent } => Some(intent),
             _ => match &channel_b.decision {
@@ -45,33 +46,86 @@ fn apply_profile_filter(
     }
 }
 
-fn audit_detail_level() -> AuditDetailLevel {
-    get_config()
+fn audit_detail_level(config: Option<&config::FirewallConfig>) -> AuditDetailLevel {
+    config
         .and_then(|c: &config::FirewallConfig| c.audit_detail_level)
         .unwrap_or(AuditDetailLevel::Basic)
+}
+
+/// Synthesises a block verdict for unknown/anonymous tenants.
+fn unknown_tenant_block(input: &PromptInput, sequence: u64, now: u128, tenant_id: Option<String>) -> Verdict {
+    let reason = BlockReason::UnknownTenant;
+    let block = crate::types::ChannelResult {
+        channel: crate::types::ChannelId::A,
+        decision: ChannelDecision::Block {
+            reason: reason.clone(),
+        },
+        elapsed_us: 0,
+        similarity: None,
+    };
+    build_final_verdict(
+        input,
+        sequence,
+        VerdictKind::Block,
+        crate::types::AdvisoryTag::None,
+        now,
+        0,
+        block.clone(),
+        block,
+        #[cfg(feature = "semantic")]
+        None,
+        #[cfg(feature = "semantic")]
+        None,
+        #[cfg(not(feature = "semantic"))]
+        None,
+        AuditDetailLevel::Basic,
+        tenant_id,
+    )
 }
 
 pub(crate) fn evaluate(
     input: PromptInput,
     sequence: u64,
+    tenant_id: Option<&str>,
     now_ns: fn() -> u128,
 ) -> Verdict {
     let start_ns = now_ns();
+    let config = get_config_for_tenant(tenant_id);
 
-    let mut channel_a = ChannelA::evaluate(&input);
-    let mut channel_b = ChannelB::evaluate(&input);
+    // Pillar 5: Fail-Closed for unknown or unauthorized tenants.
+    if config.is_none() {
+        return unknown_tenant_block(&input, sequence, start_ns, tenant_id.map(|s| s.to_string()));
+    }
+
+    // If no specific tenant provided, only allow access if anonymous is enabled in the default policy.
+    if tenant_id.is_none() && !config.as_ref().and_then(|c| c.allow_anonymous_tenants).unwrap_or(false) {
+        return unknown_tenant_block(&input, sequence, start_ns, None);
+    }
+
+    let mut channel_a = ChannelA::evaluate(&input, config.as_ref());
+    let mut channel_b = ChannelB::evaluate(&input, config.as_ref());
 
     #[cfg(feature = "semantic")]
-    let channel_d = crate::semantic::ChannelD::evaluate(&input.text);
+    let (s_tag, s_enf) = config.as_ref()
+        .map(|c| (c.semantic_threshold.unwrap_or(0.70), c.semantic_enforce_threshold.unwrap_or(1.0)))
+        .unwrap_or((0.70, 1.0));
+
+    #[cfg(feature = "semantic")]
+    let channel_d = crate::semantic::ChannelD::evaluate(&input.text, s_tag, s_enf);
     #[cfg(feature = "semantic")]
     let semantic_similarity = channel_d.similarity;
     #[cfg(not(feature = "semantic"))]
     let _semantic_similarity: Option<f32> = None;
 
     let mut verdict_kind = Voter::decide(&channel_a, &channel_b);
-    apply_profile_filter(&mut verdict_kind, &mut channel_a, &mut channel_b);
 
-    if get_config().and_then(|c| c.shadow_mode).unwrap_or(false) 
+    #[cfg(feature = "semantic")]
+    if matches!(channel_d.decision, ChannelDecision::Block { .. }) {
+        verdict_kind = VerdictKind::Block;
+    }
+    apply_profile_filter(&mut verdict_kind, &mut channel_a, &mut channel_b, config.as_ref());
+
+    if config.as_ref().and_then(|c| c.shadow_mode).unwrap_or(false) 
         && !matches!(verdict_kind, VerdictKind::Pass | VerdictKind::DiagnosticAgreement) 
     {
         verdict_kind = VerdictKind::ShadowPass;
@@ -99,6 +153,7 @@ pub(crate) fn evaluate(
         semantic_similarity,
         #[cfg(not(feature = "semantic"))]
         None,
-        audit_detail_level(),
+        audit_detail_level(config.as_ref()),
+        tenant_id.map(|s| s.to_string()),
     )
 }

@@ -18,12 +18,9 @@ static INIT_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 // runtime default - if the env var is not set at build time, compilation fails.
 const INIT_TOKEN: &str = env!("POLICY_GATE_INIT_TOKEN");
 
-// Stores the permitted-intent set for the active profile. None = Default (all intents).
-// Set once during init_with_profile(); read-only afterwards.
-static ACTIVE_PROFILE_INTENTS: OnceLock<Option<Vec<MatchedIntent>>> = OnceLock::new();
-
-// Loaded from firewall.toml during init().
-static STATIC_CONFIG: OnceLock<config::FirewallConfig> = OnceLock::new();
+// Loaded and managed via TenantRegistry (Pillar 5).
+// Keys are Tenant IDs; values are their specific configurations.
+static TENANT_REGISTRY: OnceLock<std::sync::RwLock<std::collections::HashMap<String, config::FirewallConfig>>> = OnceLock::new();
 
 /// Internal startup path for the firewall safety boundary.
 ///
@@ -45,7 +42,7 @@ pub fn init_with_token(
         ));
     }
 
-    init_with_profile_internal(profile)
+    init_with_profile_internal(profile, None)
 }
 
 /// Development and test initialization path without the build-time token.
@@ -53,15 +50,35 @@ pub fn init_with_token(
 /// This exists for local test harnesses and compatibility with integration
 /// tests. Production callers should prefer `init_with_token()`.
 pub fn init() -> Result<(), crate::FirewallInitError> {
-    init_with_profile_internal(FirewallProfile::Default)
+    init_with_profile_internal(FirewallProfile::Default, None)
 }
 
 /// Deprecated compatibility path retained for older callers.
 pub fn init_with_profile(profile: FirewallProfile) -> Result<(), crate::FirewallInitError> {
-    init_with_profile_internal(profile)
+    init_with_profile_internal(profile, None)
 }
 
-fn init_with_profile_internal(profile: FirewallProfile) -> Result<(), crate::FirewallInitError> {
+/// Explicit initialization with a pre-loaded configuration.
+/// 
+/// This is the preferred path for WASM targets and environments where 
+/// configuration is pushed from a control plane instead of disk.
+pub fn init_with_config(
+    token: &str,
+    config: config::FirewallConfig,
+) -> Result<(), crate::FirewallInitError> {
+    if token != INIT_TOKEN {
+        return Err(crate::FirewallInitError::UnauthorizedInit(
+            "Init token mismatch".into(),
+        ));
+    }
+
+    init_with_profile_internal(FirewallProfile::Default, Some(config))
+}
+
+fn init_with_profile_internal(
+    profile: FirewallProfile,
+    injected_config: Option<config::FirewallConfig>,
+) -> Result<(), crate::FirewallInitError> {
     // Validate custom regex before fixing init state so invalid profiles fail cleanly.
     if let Some((id, regex, _intent)) = profile.custom_pattern() {
         regex::Regex::new(regex).map_err(|e| {
@@ -71,27 +88,55 @@ fn init_with_profile_internal(profile: FirewallProfile) -> Result<(), crate::Fir
         })?;
     }
 
-    // First successful init fixes the active profile for the process lifetime.
-    let _ = ACTIVE_PROFILE_INTENTS.get_or_init(|| profile.permitted_intents());
-    let config = STATIC_CONFIG.get_or_init(|| config::FirewallConfig::load().unwrap_or_default());
-
-    // SA-077: Initialize config watcher with the loaded config snapshot.
-    crate::config_watcher::init_config_watcher(config.clone());
+    let registry = TENANT_REGISTRY.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+    
+    // If a profile was provided but no injected_config, merge the profile's 
+    // default permitted intents into the config of the 'default' tenant.
+    let profile_intents = profile.permitted_intents();
+    
+    if let Some(cfg) = injected_config {
+        if let Ok(mut lock) = registry.write() {
+            let id = cfg.tenant_id.clone().unwrap_or_else(|| "default".into());
+            lock.insert(id, cfg.clone());
+        }
+    } else {
+        // Legacy/Default path: load firewall.toml as the 'default' tenant
+        if let Ok(mut cfg) = config::FirewallConfig::load() {
+             if cfg.permitted_intents.is_none() {
+                 cfg.permitted_intents = profile_intents;
+             }
+             if let Ok(mut lock) = registry.write() {
+                lock.insert("default".into(), cfg.clone());
+            }
+        } else {
+            // No file config, use internal defaults + profile
+            let mut cfg = config::FirewallConfig::default();
+            cfg.permitted_intents = profile_intents;
+            if let Ok(mut lock) = registry.write() {
+                lock.insert("default".into(), cfg);
+            }
+        }
+    }
 
     let result = INIT_RESULT.get_or_init(|| {
-        // Inject dynamic config before the startup self-test warms the matcher set.
-        if let Some(custom) = &config.intents {
-            let patterns = custom
-                .iter()
-                .map(|entry| {
-                    fsm::intent_patterns::IntentPattern::new_dynamic(
-                        entry.id.clone(),
-                        entry.intent.clone(),
-                        entry.regex.clone(),
-                    )
-                })
-                .collect();
-            fsm::intent_patterns::set_custom_patterns(patterns);
+        // SA-077: Initialize config watcher for the default config if it exists
+        if let Some(default_cfg) = get_config_for_tenant(None) {
+            crate::config_watcher::init_config_watcher(default_cfg.clone());
+            
+            // Inject dynamic config before the startup self-test warms the matcher set.
+            if let Some(custom) = &default_cfg.intents {
+                let patterns = custom
+                    .iter()
+                    .map(|entry| {
+                        fsm::intent_patterns::IntentPattern::new_dynamic(
+                            entry.id.clone(),
+                            entry.intent.clone(),
+                            entry.regex.clone(),
+                        )
+                    })
+                    .collect();
+                fsm::intent_patterns::set_custom_patterns(patterns);
+            }
         }
 
         #[cfg(feature = "semantic")]
@@ -111,8 +156,64 @@ fn init_with_profile_internal(profile: FirewallProfile) -> Result<(), crate::Fir
         .map_err(|e| crate::FirewallInitError::PatternCompileFailure(e.clone()))
 }
 
-pub(crate) fn get_config() -> Option<&'static config::FirewallConfig> {
-    STATIC_CONFIG.get()
+/// Initialize the firewall with multiple tenant configurations from a directory.
+/// (Pillar 5: Multi-Tenant Policy Hub)
+#[cfg(not(target_arch = "wasm32"))]
+pub fn init_multi_tenant_registry<P: AsRef<std::path::Path>>(
+    token: &str,
+    dir_path: P,
+) -> Result<(), crate::FirewallInitError> {
+    if token != INIT_TOKEN {
+        return Err(crate::FirewallInitError::UnauthorizedInit("Token mismatch".into()));
+    }
+
+    let dir = dir_path.as_ref();
+    if !dir.is_dir() {
+        return Err(crate::FirewallInitError::PatternCompileFailure(format!(
+            "{} is not a directory", dir.display()
+        )));
+    }
+
+    let registry = TENANT_REGISTRY.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+    
+    // Scan for .toml files
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+                if let Ok(cfg) = config::FirewallConfig::load_from_path(&path) {
+                    let tenant_id = cfg.tenant_id.clone()
+                        .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
+                        .unwrap_or_else(|| "default".into());
+                    
+                    if let Ok(mut lock) = registry.write() {
+                        lock.insert(tenant_id, cfg);
+                    }
+                }
+            }
+        }
+    }
+
+    // After loading all tenants, trigger the standard init path for common components
+    init_with_profile_internal(FirewallProfile::Default, None)
+} 
+
+pub(crate) fn get_tenant_registry() -> Option<&'static std::sync::RwLock<std::collections::HashMap<String, config::FirewallConfig>>> {
+    TENANT_REGISTRY.get()
+}
+
+/// Retrieve the configuration for a specific tenant.
+/// If tenant_id is None, the 'default' policy is returned.
+pub(crate) fn get_config_for_tenant(tenant_id: Option<&str>) -> Option<config::FirewallConfig> {
+    let id = tenant_id.unwrap_or("default");
+    TENANT_REGISTRY.get()
+        .and_then(|lock| lock.read().ok())
+        .and_then(|lock| lock.get(id).cloned())
+}
+
+/// Fallback for single-tenant callers.
+pub(crate) fn get_config() -> Option<config::FirewallConfig> {
+    get_config_for_tenant(None)
 }
 
 pub(crate) fn is_initialised() -> bool {
@@ -120,7 +221,8 @@ pub(crate) fn is_initialised() -> bool {
 }
 
 pub(crate) fn active_profile_intents() -> Option<&'static Vec<MatchedIntent>> {
-    ACTIVE_PROFILE_INTENTS.get().and_then(|o| o.as_ref())
+    // This helper is being deprecated in favor of per-tenant config in orchestrator.rs
+    None
 }
 
 /// Synthesises the fail-closed verdict used by direct callers before successful init.
@@ -162,6 +264,7 @@ pub(crate) fn uninitialised_block(sequence: u64, now: u128) -> Verdict {
             now,
             now,
             0,
+            None,
         ),
     }
 }

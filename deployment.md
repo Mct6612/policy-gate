@@ -265,3 +265,50 @@ The egress firewall includes comprehensive test coverage in `crates/firewall-cor
 - **Channel interaction** (3 tests): Combined PII+framing, framing-only detection, safe response verification
 
 The 1oo2D voter requires both channels to agree on Pass, with either channel able to block independently (fail-closed).
+
+---
+
+## 8. Multi-Tenant Deployment (Pillar 5)
+
+Production multi-tenant environments must use the directory-based registry for isolated policy management.
+
+### Directory Structure
+
+Each tenant is defined in its own `.toml` file. The filename becomes the `tenant_id` by default.
+
+```text
+/etc/policy-gate/tenants/
+├── default.toml        # Baseline policy for anonymous requests
+├── customer-a.toml     # Strict policy for Customer A
+└── customer-b.toml     # Relaxed policy for Developer B
+```
+
+### Initialization (Pillar 5)
+
+Initialization from a directory is authorized using exactly the same `POLICY_GATE_INIT_TOKEN` as single-tenant mode:
+
+```rust
+policy_gate::init_multi_tenant_registry(
+    std::env::var("POLICY_GATE_INIT_TOKEN").expect("SA-073: token required"),
+    "/etc/policy-gate/tenants/"
+).expect("Failed to initialize tenant registry");
+```
+
+### Fail-Closed Isolation (SA-048)
+
+The orchestrator enforces strict isolation:
+- **No Config**: If no `.toml` exists for a requested `tenant_id`, the request is **blocked** as `UnknownTenant`.
+- **Anonymous Access**: If the `default.toml` has `allow_anonymous_tenants = false` (the default), requests without a `tenant_id` are **blocked**.
+
+### Multi-Tenant Audit Trails (OC-03)
+
+In multi-tenant deployments, the application MUST ensure that `AuditEntry` metadata (including `tenant_id` and `sequence`) is persisted to a data store that supports per-tenant query and isolation.
+
+| Audit Field | Requirement |
+|-------------|-------------|
+| `tenant_id` | Mandatory - Used for logical data separation in the audit log. |
+| `sequence` | Mandatory - Monotonically increasing counter per tenant for HMAC chaining. |
+
+---
+
+*See [SAFETY_MANUAL.md](./SAFETY_MANUAL.md) for detailed multi-tenant safety argumentation.*
