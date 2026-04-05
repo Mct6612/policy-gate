@@ -16,4 +16,6 @@ fuzz/corpus/
 README-old.md
 plans/
 firewall.toml
+docs/ENTERPRISE_ROADMAP.md
+docs/COMPETITIVE_ANALYSIS.md
 
