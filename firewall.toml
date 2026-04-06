@@ -1,0 +1,13 @@
+
+
+# AUTO-ADDED RULE EXCEPTION (Requires Rust implementation or manual port)
+# [[rule_engine.exceptions]]
+# rule_id = "RE-004"
+# regex = "(?!.*print\(sys\.argv\))"
+# reason = "Operator-Review: Rule Exception for Cluster"
+
+# AUTO-ADDED RULE EXCEPTION (Requires Rust implementation or manual port)
+# [[rule_engine.exceptions]]
+# rule_id = "RE-004"
+# regex = "(?!.*print\(sys\.argv\))"
+# reason = "Operator-Review: Rule Exception for Cluster"
