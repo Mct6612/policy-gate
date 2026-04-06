@@ -996,6 +996,23 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
                         if confirm in ("y", ""):
                             detail.operator_notes = f"suggest:{suggestion.regex}"
                             
+                            # ── Fuzz Check ──────────────────────────────────
+                            print(f"  [FUZZ] Running bypass fuzzer on regex...")
+                            try:
+                                from fuzz_regex import run_fuzz
+                                fuzz = run_fuzz(suggestion.regex, verbose=False)
+                                if fuzz.dangerous_count > 0:
+                                    print(f"  [FUZZ] ⚠  {fuzz.dangerous_count} DANGEROUS probes found!")
+                                    print(f"         Regex may be too permissive. Proceed anyway? [y/N]: ", end="")
+                                    override = input().strip().lower()
+                                    if override != "y":
+                                        print("  Aborted. Refine the regex before accepting.")
+                                        continue
+                                else:
+                                    print(f"  [FUZZ] ✅ 0 dangerous probes. Regex is safe to commit.")
+                            except ImportError:
+                                print("  [FUZZ] Skipped (fuzz_regex.py not found)")
+                            
                             # Auto-write to firewall.toml
                             write_ok = write_toml_patch(
                                 suggestion.regex,

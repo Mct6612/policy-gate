@@ -645,12 +645,13 @@ The repository includes operator-facing support tooling with a full **Git-Ops au
 |---|---|
 | [operator_review.py](./verification/operator_review.py) | Interactive CLI for reviewing `DiagnosticDisagreement` events — with clustering, Z3 dry-run, and Git-Ops auto-commit |
 | [suggest_pattern.py](./verification/suggest_pattern.py) | Generates regex patterns, SMT2 proof obligations, and Safety Manual snippets |
+| [fuzz_regex.py](./verification/fuzz_regex.py) | Bypass fuzzer — combines allowlist regex with SQLi/XSS/PromptInjection payloads to detect over-permissive patterns |
 | [disagreement_analytics.py](./verification/disagreement_analytics.py) | Batch analytics and FP rate reporting |
 | [operator_review_architecture.md](./verification/operator_review_architecture.md) | Architecture notes and integration checklist |
 
 **Operator workflow (one keypress `y` = full release cycle):**
 ```
-False Positive → [R]/[S] → Z3 Dry-Run → Accept → TOML Patch → Safety Manual → git commit
+False Positive → [R]/[S] → Z3 Dry-Run → Fuzz Check → Accept → TOML Patch → Safety Manual → git commit
 ```
 
 ## Hardening themes
@@ -666,6 +667,7 @@ The codebase contains explicit hardening work for areas such as:
 - **session-aware multi-turn escalation detection** with sliding window memory
 - **zero-trust verification of user-generated Regex via Z3 SMT2 Dry-Runs** (Shift-Left)
 - **Git-Ops automation loop**: operator acceptance auto-patches `firewall.toml`, `SAFETY_MANUAL.md`, and creates a traceable `git commit`
+- **automated regex bypass fuzzing**: `fuzz_regex.py` generates SQLi/XSS/PromptInjection probes against new allowlist patterns before they are committed
 
 For the full design history and safety action log, see [SAFETY_MANUAL.md](./SAFETY_MANUAL.md).
 
