@@ -265,6 +265,65 @@ def write_toml_patch(pattern: str, reason: str, sequence_id: int = 0, toml_path:
         print(f"  [ERROR] Failed to write TOML: {e}", file=sys.stderr)
         return False
 
+def write_rule_exception_patch(rule_id: str, pattern: str, reason: str, sequence_id: int = 0, toml_path: str = "firewall.toml") -> bool:
+    """Writes a generic TOML block comment for rule exceptions."""
+    if not pattern:
+        print("  [ERROR] No pattern provided", file=sys.stderr)
+        return False
+    toml_file = Path(toml_path)
+    reason_text = reason if reason else f"Operator-Review: FP #{sequence_id}"
+    try:
+        if toml_file.exists():
+            with open(toml_file, "r", encoding="utf-8") as f:
+                content = f.read()
+        else:
+            content = ""
+            
+        with open(toml_file, "w", encoding="utf-8") as f:
+            f.write(content)
+            if not content.endswith("\n"): f.write("\n")
+            f.write("\n# AUTO-ADDED RULE EXCEPTION (Requires Rust implementation or manual port)\n")
+            f.write(f"# [[rule_engine.exceptions]]\n")
+            f.write(f"# rule_id = \"{rule_id}\"\n")
+            f.write(f"# regex = \"{pattern}\"\n")
+            f.write(f"# reason = \"{reason_text}\"\n")
+        return True
+    except Exception as e:
+        print(f"  [ERROR] Failed to write Rule Exception to TOML: {e}", file=sys.stderr)
+        return False
+
+def patch_safety_manual(snippet: str) -> bool:
+    import os
+    safety_path = os.path.join(os.path.dirname(__file__), "..", "SAFETY_MANUAL.md")
+    if not os.path.exists(safety_path):
+        print("  [WARN] SAFETY_MANUAL.md not found, skipping patch.")
+        return False
+    try:
+        with open(safety_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        if "## 9. Auto-Generated Operator Logs" not in content:
+            content += "\n\n## 9. Auto-Generated Operator Logs\n\nThe following section acts as a Git-Ops ledger for rule and pattern tunings initiated by the operator.\n"
+        
+        content += "\n" + snippet + "\n"
+        with open(safety_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return True
+    except Exception as e:
+        print(f"  [ERROR] Failed to patch SAFETY_MANUAL: {e}")
+        return False
+
+def execute_git_commit(message: str) -> bool:
+    import os
+    import subprocess
+    repo_dir = os.path.dirname(os.path.dirname(__file__))
+    try:
+        subprocess.run(["git", "add", "-f", "firewall.toml", "SAFETY_MANUAL.md"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", message], cwd=repo_dir, check=True, capture_output=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"  [ERROR] Git commit failed: {e.stderr}", file=sys.stderr)
+        return False
 
 def extract_problematic_text(detail: "DisagreementDetail") -> Optional[str]:
     """
@@ -799,19 +858,31 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
 
     print("INTERACTIVE MODE: Review each DiagnosticDisagreement event.")
     print(
-        "Commands: [a]cknowledge, [p]attern-add, [P]attern-add-auto, [r]ule-adjust, [f]alse-positive, [t]rue-positive, [d]efer, [s]kip, [q]uit"
+        "Commands: [a]cknowledge, [p]attern-add, [P]attern-add-auto, [S]uggest-pattern, [r]ule-adjust, [R]ule-adjust-auto, [f]alse-positive, [t]rue-positive, [d]efer, [s]kip, [q]uit"
     )
     print()
 
-    for i, detail in enumerate(disagreements):
+    groups: dict[str, list[DisagreementDetail]] = {}
+    for d in disagreements:
+        a_patt = d.channel_a.matched_pattern if d.channel_a else "None"
+        b_patt = d.channel_b.matched_pattern if d.channel_b else "None"
+        b_detail = d.channel_b.decision_detail if d.channel_b else "None"
+        key = f"{a_patt}|{b_patt}|{b_detail}"
+        groups.setdefault(key, []).append(d)
+    
+    clusters = list(groups.values())
+
+    for i, cluster in enumerate(clusters):
+        detail = cluster[0]
         print(f"\n{'━' * BOX_WIDTH}")
-        print(f"  Reviewing {i + 1}/{len(disagreements)}")
+        print(f"  Reviewing Cluster {i + 1}/{len(clusters)} (Contains {len(cluster)} events)")
         print(f"{'━' * BOX_WIDTH}")
 
         render_disagreement(detail, verbose=True)
 
         while True:
-            action = input("Action [a/p/P/r/f/t/d/s/q]: ").strip().lower()
+            action_orig = input("Action [a/p/P/S/r/R/f/t/d/s/q]: ").strip()
+            action = action_orig.lower()
 
             if action in ("q", "quit", "exit"):
                 print("\n  Saving actions and exiting...")
@@ -827,13 +898,13 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
                 detail.operator_notes = input("Notes (optional): ").strip()
                 break
 
-            elif action in ("p", "pattern-add"):
+            elif action_orig == "p" or action == "pattern-add":
                 # Manual pattern add (existing behavior)
                 detail.operator_action = OperatorAction.ADD_PATTERN
                 detail.operator_notes = input("Pattern to add: ").strip()
                 break
 
-            elif action in ("P", "pattern-add-auto"):
+            elif action_orig == "P" or action == "pattern-add-auto":
                 # Auto-generate pattern from the disagreement
                 detail.operator_action = OperatorAction.ADD_PATTERN_AUTO
                 
@@ -893,12 +964,122 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
                     print("  [WARN] Could not extract input text for auto-generation")
                     print("  Falling back to manual pattern entry")
                     detail.operator_action = OperatorAction.ADD_PATTERN
-                    detail.operator_notes = input("Pattern to add: ").strip()
+                    detail.operator_notes = input("Pattern toadd: ").strip()
                 break
 
-            elif action in ("r", "rule-adjust"):
+            elif action_orig == "S" or action == "suggest-pattern":
+                detail.operator_action = OperatorAction.ADD_PATTERN_AUTO
+                problem_text = extract_problematic_text(detail)
+                if problem_text:
+                    try:
+                        from suggest_pattern import suggest_pattern, check_z3_snippet
+                        import os
+                        print("\n  [INFO] Running suggest_new_ip_pattern API...")
+                        suggestion = suggest_pattern(
+                            audit_log_path="", 
+                            positive_examples=[problem_text],
+                            negative_examples=[],
+                            safety_constraints=["no restrictions"] # Example constraints
+                        )
+                        print(f"\n  SUGGESTED NEW IP PATTERN:")
+                        print(f"  ID:          {suggestion.pattern_id}")
+                        print(f"  Regex:       {suggestion.regex}")
+                        print(f"  Needs Guard: {suggestion.needs_guard}")
+                        print(f"  Z3 PO Update:\n{suggestion.z3_po_update}")
+                        print(f"  Safety Manual:\n{suggestion.safety_manual_snippet}")
+                        
+                        smt_path = os.path.join(os.path.dirname(__file__), "channel_a.smt2")
+                        z3_res = check_z3_snippet(smt_path, suggestion.z3_po_update)
+                        print(f"  [Z3 DRY-RUN] {z3_res}")
+                        
+                        confirm = input("\n  Accept suggestion? [y]es / [n]o: ").strip().lower()
+                        if confirm in ("y", ""):
+                            detail.operator_notes = f"suggest:{suggestion.regex}"
+                            
+                            # Auto-write to firewall.toml
+                            write_ok = write_toml_patch(
+                                suggestion.regex,
+                                f"Operator-Review: {suggestion.pattern_id} for Cluster",
+                                detail.sequence
+                            )
+                            if write_ok:
+                                print(f"  [AUTO] Pattern written to firewall.toml")
+                                
+                            # Patch Safety Manual
+                            patch_safety_manual(suggestion.safety_manual_snippet)
+                            print(f"  [AUTO] Safety Manual patched")
+                            
+                            # Git Commit
+                            execute_git_commit(f"chore(firewall): Auto-add {suggestion.pattern_id} allowlist intent")
+                            print(f"  [AUTO] Git commit executed")
+                            
+                            print("  Suggestion fully integrated.")
+                        else:
+                            print("  Suggestion rejected, action cancelled")
+                            continue
+                    except ImportError:
+                        print("  [ERROR] Could not import suggest_pattern. Is it in the same directory?")
+                else:
+                    print("  [WARN] Could not extract text for suggestion")
+                break
+
+            elif action_orig == "r" or action == "rule-adjust":
                 detail.operator_action = OperatorAction.ADJUST_RULE
                 detail.operator_notes = input("Rule adjustment: ").strip()
+                break
+
+            elif action_orig == "R" or action == "rule-adjust-auto":
+                detail.operator_action = OperatorAction.ADJUST_RULE
+                problem_text = extract_problematic_text(detail)
+                rule_id = detail.channel_b.matched_pattern or "UNKNOWN-RULE"
+                if problem_text:
+                    try:
+                        from suggest_pattern import suggest_rule_exception, check_z3_snippet
+                        import os
+                        print(f"\n  [INFO] Running suggest_rule_exception API for {rule_id}...")
+                        suggestion = suggest_rule_exception(rule_id, problem_text)
+                        
+                        print(f"\n  SUGGESTED RULE EXCEPTION:")
+                        print(f"  Rule ID:         {suggestion.rule_id}")
+                        print(f"  Exception Regex: {suggestion.exception_regex}")
+                        print(f"  Rationale:       {suggestion.rationale}")
+                        print(f"  Z3 PO Update:\n{suggestion.z3_po_update}")
+                        print(f"  Safety Manual:\n{suggestion.safety_manual_snippet}")
+                        
+                        smt_path = os.path.join(os.path.dirname(__file__), "rule_engine.smt2")
+                        z3_res = check_z3_snippet(smt_path, suggestion.z3_po_update)
+                        print(f"  [Z3 DRY-RUN] {z3_res}")
+                        
+                        confirm = input("\n  Accept suggestion? [y]es / [n]o: ").strip().lower()
+                        if confirm in ("y", ""):
+                            detail.operator_notes = f"exception_auto:{suggestion.exception_regex}"
+                            
+                            # Auto-write exception block to firewall.toml
+                            write_ok = write_rule_exception_patch(
+                                suggestion.rule_id,
+                                suggestion.exception_regex,
+                                f"Operator-Review: Rule Exception for Cluster",
+                                detail.sequence
+                            )
+                            if write_ok:
+                                print(f"  [AUTO] Exception block appended to firewall.toml")
+                                
+                            # Patch Safety Manual
+                            patch_safety_manual(suggestion.safety_manual_snippet)
+                            print(f"  [AUTO] Safety Manual patched")
+                            
+                            # Git Commit
+                            execute_git_commit(f"chore(firewall): Auto-tune {suggestion.rule_id} exception")
+                            print(f"  [AUTO] Git commit executed")
+                            
+                            print("  Exception fully integrated.")
+                        else:
+                            print("  Suggestion rejected, action cancelled")
+                            continue
+                    except ImportError:
+                        print("  [ERROR] Could not import suggest_pattern. Is it in the same directory?")
+                else:
+                    print("  [WARN] Could not extract text for exception suggestion")
                 break
 
             elif action in ("f", "false-positive"):
@@ -919,17 +1100,20 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
             else:
                 print("  Unknown command. Use: a/p/P/r/f/t/d/s/q")
 
-        # Record action
-        actions_log.append(
-            {
-                "sequence": detail.sequence,
-                "action": detail.operator_action.value
-                if detail.operator_action
-                else "none",
-                "notes": detail.operator_notes,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-        )
+        # Record action for all events in cluster
+        for c_detail in cluster:
+            c_detail.operator_action = detail.operator_action
+            c_detail.operator_notes = detail.operator_notes
+            actions_log.append(
+                {
+                    "sequence": c_detail.sequence,
+                    "action": c_detail.operator_action.value
+                    if c_detail.operator_action
+                    else "none",
+                    "notes": c_detail.operator_notes,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
 
         print(f"  Recorded: {detail.operator_action.value}")
 

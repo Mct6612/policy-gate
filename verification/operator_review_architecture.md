@@ -180,4 +180,53 @@ python verification/operator_review.py --input audit.ndjson --interactive
 - [x] Update `operator_review.py` to parse full channel results (already v2-ready)
 - [x] Add auto-regex generation (`generate_regex_from_text`)
 - [x] Add `ADD_PATTERN_AUTO` operator action
-- [ ] Update Z3 proofs if audit entry changes affect safety properties
+- [x] Add `Disagreement Clustering` pre-processing to Interactive Mode
+- [x] Implement `Z3 Dry-Run` check for `suggest_pattern` and `suggest_rule_exception`
+- [x] Implement Git-Ops automation: auto-patch `firewall.toml`, `SAFETY_MANUAL.md`, and `git commit`
+
+## Advanced Operator Capabilities (Z3 Dry-Run & Clustering)
+
+**Status: ✅ IMPLEMENTED**
+
+To further increase the efficiency and safety of the Operator Review process, two native mechanisms have been added to the Interactive Mode.
+
+### 1. Disagreement Clustering (Bulk Review)
+Instead of forcing the Operator to review every single `DiagnosticDisagreement` independently, the `operator_review.py` script now leverages **Pre-Processing Clustering**. 
+1. Events with the exact same FSM (Channel A) and Rule (Channel B) classification are bundled.
+2. The UI outputs: `Reviewing Cluster X/Y (Contains Z events)`.
+3. An action triggered by the operator (e.g., `ADD_PATTERN_AUTO`) is rolled out across all sub-events inside that cluster automatically, drastically reducing the mental load.
+
+### 2. Z3 Dry-Run Verifikation
+Before an automatically suggested regex or rule exception is accepted, the scripts dynamically integrate the new SMT2 snippet into the system's baseline proof (`channel_a.smt2` / `rule_engine.smt2`) and run a `(check-sat)` Dry-Run via the native Python `z3` dependency.
+If the check is `Passed`, it guarantees that the operator's decision doesn't break structural invariants. If it's `Failed`, the snippet isn't functionally compatible with the existing framework rules (e.g., calling an undefined function) and serves as an immediate early warning.
+
+## Git-Ops Automation
+
+**Status: ✅ IMPLEMENTED**
+
+When an Operator accepts a suggestion (`y`), the following automated pipeline runs in sequence:
+
+```
+[S] / [R] Accept → TOML Patch → Safety Manual Patch → git commit
+```
+
+### Functions
+
+| Function | Description |
+|---|---|
+| `write_toml_patch()` | Appends `[[intent_patterns.allowlist]]` entry to `firewall.toml` (for `[S]` actions) |
+| `write_rule_exception_patch()` | Appends a commented-out `[[rule_engine.exceptions]]` block to `firewall.toml` (for `[R]` actions, pending Rust implementation) |
+| `patch_safety_manual()` | Opens `SAFETY_MANUAL.md`, ensures a `## 9. Auto-Generated Operator Logs` section exists, and appends the Z3/regex proof snippet from the suggestion |
+| `execute_git_commit()` | Stages `firewall.toml` + `SAFETY_MANUAL.md` and executes `git commit -m "chore(firewall): ..."` |
+
+### Commit Message Convention
+
+| Action | Commit Message |
+|---|---|
+| `[S]` Intent Pattern | `chore(firewall): Auto-add IP-XXX allowlist intent` |
+| `[R]` Rule Exception | `chore(firewall): Auto-tune RE-XXX exception` |
+
+### Notes
+- `firewall.toml` may be in `.gitignore` for production deployments. The commit uses `git add -f` to force inclusion.
+- Rule exceptions are written as commented-out TOML blocks pending a native `[[rule_engine.exceptions]]` schema in the Rust core.
+- Safety Manual is patched under `## 9. Auto-Generated Operator Logs` which is created on first use.

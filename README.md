@@ -639,11 +639,19 @@ python verification/fp_rate_test.py
 
 ### Review and analytics tooling
 
-The repository also includes operator-facing support tooling:
+The repository includes operator-facing support tooling with a full **Git-Ops automation loop**:
 
-- [verification/operator_review.py](./verification/operator_review.py)
-- [verification/disagreement_analytics.py](./verification/disagreement_analytics.py)
-- [verification/operator_review_architecture.md](./verification/operator_review_architecture.md)
+| Tool | Description |
+|---|---|
+| [operator_review.py](./verification/operator_review.py) | Interactive CLI for reviewing `DiagnosticDisagreement` events — with clustering, Z3 dry-run, and Git-Ops auto-commit |
+| [suggest_pattern.py](./verification/suggest_pattern.py) | Generates regex patterns, SMT2 proof obligations, and Safety Manual snippets |
+| [disagreement_analytics.py](./verification/disagreement_analytics.py) | Batch analytics and FP rate reporting |
+| [operator_review_architecture.md](./verification/operator_review_architecture.md) | Architecture notes and integration checklist |
+
+**Operator workflow (one keypress `y` = full release cycle):**
+```
+False Positive → [R]/[S] → Z3 Dry-Run → Accept → TOML Patch → Safety Manual → git commit
+```
 
 ## Hardening themes
 
@@ -656,6 +664,8 @@ The codebase contains explicit hardening work for areas such as:
 - leakage and PII-like output validation
 - audit integrity via chained HMAC-based records
 - **session-aware multi-turn escalation detection** with sliding window memory
+- **zero-trust verification of user-generated Regex via Z3 SMT2 Dry-Runs** (Shift-Left)
+- **Git-Ops automation loop**: operator acceptance auto-patches `firewall.toml`, `SAFETY_MANUAL.md`, and creates a traceable `git commit`
 
 For the full design history and safety action log, see [SAFETY_MANUAL.md](./SAFETY_MANUAL.md).
 

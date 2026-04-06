@@ -278,7 +278,27 @@ ule_engine.smt2) using Python z3. The result acts as a zero-trust check before a
   3. Appends the generated pattern to the `[intent_patterns.allowlist]` section
   4. No manual editing required — pattern is immediately active after confirmation
 
-**Safety:** Patterns require operator confirmation — not auto-deployed. Manual review ensures no regression before pattern enters the allowlist.
+**Algorithm:**
+1. Text Extraction (`extract_problematic_text()`) identifies the root fragment.
+2. Heuristics escape components, allow simple case normalization, or enforce hard exceptions via Negative Lookaheads.
+3. The rule is translated to SMT2 constraint logic and fed into `check_z3_snippet(smt2, snippet)`.
+4. If it returns **Passed**, the Operator is queried for acceptance.
+
+**Git-Ops Automation (on Accept):**
+
+When the operator accepts a suggestion with `[y]es`, the following pipeline executes automatically:
+```
+[R]/[S] Accept -> TOML Patch -> Safety Manual Append -> git commit
+```
+
+| Function | Action |
+|---|---|
+| `write_toml_patch()` | Appends `[[intent_patterns.allowlist]]` entry to `firewall.toml` |
+| `write_rule_exception_patch()` | Appends commented `[[rule_engine.exceptions]]` block to `firewall.toml` |
+| `patch_safety_manual()` | Appends the Z3/regex snippet to `## 9. Auto-Generated Operator Logs` in this document |
+| `execute_git_commit()` | Stages both files and executes `git commit -m "chore(firewall): Auto-tune RE-XXX exception"` |
+
+**Safety:** Patterns require operator confirmation - not auto-deployed. The Z3 Dry-Run result is displayed before acceptance. All changes are traceable via `git log`.
 
 ---
 
