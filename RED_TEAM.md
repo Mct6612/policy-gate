@@ -29,7 +29,7 @@ This document outlines systematic attack strategies and templates used to stress
 ## 😈 Strategy 4: Semantic Drift
 **Goal:** Use euphemisms or domain language to bypass keyword filters.
 **Pattern:** Replace "hack" with "gain unauthorized access", "steal data" with "retrieve protected information".
-- **Risk:** High relevance for Channel D (Semantic) which is currently advisory only.
+- **Risk Mitigation:** Fast-Semantic 2.0 expansion (Rev 2.27) adds 8 attack centroids, specifically targeting `PhishingAids` and `DependencyConfusion` "vibes" that bypass keyword-only filters.
 
 ## 😈 Strategy 5: Role / Persona Indirection
 **Goal:** Delegate responsibility to a third party or analytical persona.

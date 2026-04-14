@@ -20,7 +20,7 @@ It is designed for teams that want predictable enforcement, auditable decisions,
 - auditable PASS/BLOCK outcomes
 - **Multi-Tenant Policy Hub**: isolated security profiles per tenant
 - **shadow mode**: safe deployment and observability without active blocking
-- advisory heuristics and semantic analysis kept outside the safety path
+- advisory heuristics and expanded **Fast-Semantic 2.0** analysis (8 attack centroids) kept outside the safety path
 - optional session-aware analysis for multi-turn escalation patterns
 - **[experimental] Streaming Egress**: safe Aho-Corasick chunk scanning across SSE boundaries
 - **configurable voter strictness per tenant**: `on_diagnostic_agreement = "fail_closed"` for high-sensitivity workflows

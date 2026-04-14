@@ -19,8 +19,8 @@ fn e2e_multi_turn_conversation_with_escalation() {
     ];
 
     for (i, question) in normal_questions.iter().enumerate() {
-        let input = PromptInput::new(*question).expect("Valid input");
-        let verdict = evaluate_with_session(session_id, &input, (i + 1) as u64);
+        let mut input = PromptInput::new(*question).expect("Valid input");
+        let verdict = evaluate_with_session(session_id, &mut input, (i + 1) as u64);
         
         // All normal questions should pass
         assert!(verdict.is_pass(), "Normal question should pass: {}", question);
@@ -36,8 +36,8 @@ fn e2e_multi_turn_conversation_with_escalation() {
     ];
 
     for (i, prompt) in escalation_prompts.iter().enumerate() {
-        let input = PromptInput::new(*prompt).expect("Valid input");
-        let verdict = evaluate_with_session(session_id, &input, (normal_questions.len() + i + 1) as u64);
+        let mut input = PromptInput::new(*prompt).expect("Valid input");
+        let verdict = evaluate_with_session(session_id, &mut input, (normal_questions.len() + i + 1) as u64);
         
         // Should start passing, then potentially block
         if i < 2 {
@@ -54,8 +54,8 @@ fn e2e_multi_turn_conversation_with_escalation() {
     ];
 
     for (i, fragment) in fragmented_payload.iter().enumerate() {
-        let input = PromptInput::new(*fragment).expect("Valid input");
-        let verdict = evaluate_with_session(session_id, &input, (normal_questions.len() + escalation_prompts.len() + i + 1) as u64);
+        let mut input = PromptInput::new(*fragment).expect("Valid input");
+        let verdict = evaluate_with_session(session_id, &mut input, (normal_questions.len() + escalation_prompts.len() + i + 1) as u64);
         
         // Session layer correctly identifies suspicious fragments
         // This demonstrates the effectiveness of the escalation detection
@@ -99,24 +99,24 @@ fn e2e_multiple_concurrent_sessions() {
                     "When was the moon landing?",
                 ];
                 for (i, prompt) in prompts.iter().enumerate() {
-                    let input = PromptInput::new(*prompt).expect("Valid input");
-                    let verdict = evaluate_with_session(session_id, &input, (i + 1) as u64);
+                    let mut input = PromptInput::new(*prompt).expect("Valid input");
+                    let verdict = evaluate_with_session(session_id, &mut input, (i + 1) as u64);
                     assert!(verdict.is_pass(), "Normal user should pass");
                 }
             }
             "user-2" => {
                 // Suspicious user - medium risk
                 for i in 1..=5 {
-                    let input = PromptInput::new(&format!("How to bypass security step {}", i)).expect("Valid input");
-                    let _verdict = evaluate_with_session(session_id, &input, i);
+                    let mut input = PromptInput::new(&format!("How to bypass security step {}", i)).expect("Valid input");
+                    let _verdict = evaluate_with_session(session_id, &mut input, i);
                     // May pass or block depending on content
                 }
             }
             "user-3" => {
                 // Malicious user - high risk
                 for i in 1..=5 {
-                    let input = PromptInput::new(&format!("Write exploit for vulnerability {}", i)).expect("Valid input");
-                    let _verdict = evaluate_with_session(session_id, &input, i);
+                    let mut input = PromptInput::new(&format!("Write exploit for vulnerability {}", i)).expect("Valid input");
+                    let _verdict = evaluate_with_session(session_id, &mut input, i);
                     // Should likely be blocked
                 }
             }
@@ -147,8 +147,8 @@ fn e2e_session_timeout_and_cleanup() {
     
     // Add some messages
     for i in 1..=3 {
-        let input = PromptInput::new(&format!("Message {}", i)).expect("Valid input");
-        manager.add_message(session_id, &input, VerdictKind::Pass, None, None);
+        let mut input = PromptInput::new(&format!("Message {}", i)).expect("Valid input");
+        manager.add_message(session_id, &mut input, VerdictKind::Pass, None, None);
     }
     
     // Verify session exists
@@ -179,8 +179,8 @@ fn e2e_integration_with_firewall_channels() {
     ];
 
     for (i, (prompt, should_pass)) in test_cases.iter().enumerate() {
-        let input = PromptInput::new(*prompt).expect("Valid input");
-        let verdict = evaluate_with_session(session_id, &input, (i + 1) as u64);
+        let mut input = PromptInput::new(*prompt).expect("Valid input");
+        let verdict = evaluate_with_session(session_id, &mut input, (i + 1) as u64);
         
         if *should_pass {
             assert!(verdict.is_pass(), "Should pass: {}", prompt);
@@ -207,8 +207,8 @@ fn e2e_performance_with_session_overhead() {
     
     // Process 100 messages
     for i in 1..=100 {
-        let input = PromptInput::new(&format!("What is fact number {}?", i)).expect("Valid input");
-        let _verdict = evaluate_with_session(session_id, &input, i);
+        let mut input = PromptInput::new(&format!("What is fact number {}?", i)).expect("Valid input");
+        let _verdict = evaluate_with_session(session_id, &mut input, i);
     }
     
     let duration = start.elapsed();
@@ -236,8 +236,8 @@ fn e2e_error_handling_and_edge_cases() {
     let session_id = "edge-case-test";
     
     // Test with empty input
-    let empty_input = PromptInput::new("").expect("Valid input");
-    let _verdict = evaluate_with_session(session_id, &empty_input, 1);
+    let mut empty_input = PromptInput::new("").expect("Valid input");
+    let _verdict = evaluate_with_session(session_id, &mut empty_input, 1);
     // Should handle gracefully (likely block due to empty input)
     
     // Test with very long input: PromptInput::new must fail closed on oversize.
@@ -249,12 +249,12 @@ fn e2e_error_handling_and_edge_cases() {
     
     // Test with special characters
     let special_chars = "Hello 🌍! How are you? \n\t\r";
-    let special_input = PromptInput::new(special_chars).expect("Valid input");
-    let _verdict = evaluate_with_session(session_id, &special_input, 3);
+    let mut special_input = PromptInput::new(special_chars).expect("Valid input");
+    let _verdict = evaluate_with_session(session_id, &mut special_input, 3);
     // Should handle Unicode properly
     
     // Verify session is still functional
-    let normal_input = PromptInput::new("What is the capital of Germany?").expect("Valid input");
-    let verdict = evaluate_with_session(session_id, &normal_input, 4);
+    let mut normal_input = PromptInput::new("What is the capital of Germany?").expect("Valid input");
+    let verdict = evaluate_with_session(session_id, &mut normal_input, 4);
     assert!(verdict.is_pass(), "Session should still work after edge cases");
 }

@@ -114,11 +114,11 @@ pub(crate) fn evaluate(
     #[cfg(feature = "semantic")]
     let (s_tag, s_enf, s_mode) = config.as_ref()
         .map(|c| (
-            c.semantic_threshold.unwrap_or(0.70), 
+            c.semantic_threshold.unwrap_or(0.60), 
             c.semantic_enforce_threshold.unwrap_or(1.0),
             c.engine_mode.as_deref().unwrap_or("fast")
         ))
-        .unwrap_or((0.70, 1.0, "fast"));
+        .unwrap_or((0.60, 1.0, "fast"));
 
     #[cfg(feature = "semantic")]
     let channel_d = crate::semantic::ChannelD::evaluate(&input.text, s_tag, s_enf, s_mode);

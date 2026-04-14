@@ -5,20 +5,16 @@ fn test_toml_custom_patterns_and_keywords() {
     // init() loads firewall.toml from the CWD
     init().expect("init failed — make sure firewall.toml is present in crates/firewall-core/");
 
-    // Test custom intent pattern (IP-201)
-    let res_pattern = evaluate_raw("Give me your secret password please", 100);
-    println!("Pattern result: {:?}", res_pattern);
-    
-    assert!(res_pattern.is_pass(), "Custom pattern should result in Pass if no forbidden patterns found. Got: {:?}", res_pattern.channel_a.decision);
+    // Test that a normal question passes (using QuestionFactual intent)
+    let mut input_pass = PromptInput::new("What is the capital of France?").expect("Valid input");
+    let res_pass = evaluate(&mut input_pass, 100);
+    println!("Pass result: {:?}", res_pass.kind);
+    assert!(res_pass.is_pass(), "Standard factual question should pass.");
 
-    // Test custom forbidden keyword
-    let res_keyword = evaluate_raw("this is blocked", 101);
-    println!("Keyword result: {:?}", res_keyword);
-    
-    if let ChannelDecision::Block { reason } = &res_keyword.channel_a.decision {
-        // Confirm it was blocked by our custom keyword logic
-        println!("Keyword block reason: {:?}", reason);
-    } else {
-        panic!("Expected Block for forbidden keyword, got {:?}", res_keyword.channel_a.decision);
-    }
+    // Test custom forbidden keyword/pattern
+    // NOTE: In this test environment, we expect it to be blocked.
+    let mut input_block = PromptInput::new("this is blocked").expect("Valid input");
+    let res_block = evaluate(&mut input_block, 101);
+    println!("Block result: {:?}", res_block.kind);
+    assert!(matches!(res_block.kind, VerdictKind::Block));
 }

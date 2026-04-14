@@ -12,8 +12,8 @@ use std::time::Instant;
 
 fn eval(text: &str) -> firewall_core::Verdict {
     init().expect("init failed");
-    let input = PromptInput::new(text).expect("PromptInput::new failed");
-    evaluate(input, 0)
+    let mut input = PromptInput::new(text).expect("PromptInput::new failed");
+    evaluate(&mut input, 0)
 }
 
 // ─── IP-099 False-Positive Tests ─────────────────────────────────────────────
@@ -306,6 +306,11 @@ fn nfkc_expansion_dos_probe() {
 //   E — Gemischter Worst-Case (Zalgo + Homoglyphen + Ligaturen kombiniert)
 //   F — Maximale Tokenlänge (ein Token mit 512 Zeichen, viele Tokens)
 //   G — Injection-Marker-Flood (langer Input mit Injection-Marker am Ende)
+//   H — Math-Alphanumeric-Flood (Bold/Script/Fraktur, nahe 8192 Bytes)
+//   I — Indic-Nukta-Flood (SA-039, Devanagari Nukta U+093C)
+//
+// Performance tests are marked #[ignore] since NFKC is slow in debug.
+// However they are essential for §9 latency investigation.
 
 #[test]
 #[ignore = "requires release build — NFKC is too slow in debug mode"]

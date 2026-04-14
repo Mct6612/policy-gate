@@ -3,7 +3,7 @@
 ## Safety-Oriented Architecture Documentation
 
 **Document ID:** PF-SM-001
-**Revision:** 2.25
+**Revision:** 2.27
 **Status:** Under development — not certified — not for production use
 **Design target:** Deterministic, fail-closed prompt gate for narrow LLM workflows
 
@@ -21,6 +21,7 @@ Recent revisions:
 
 | Rev  | Date    | Current relevance |
 | ---- | ------- | ----------------- |
+| 2.27 | 2026-04 | **Fast-Semantic 2.0 Expansion**: Increased to 8 centroids (added `PhishingAids` and `DependencyConfusion`). Calibrated default `semantic_threshold` to 0.60 for improved recall. **API Hardening**: Enforced mutable borrowing for `PromptInput` to ensure stateful persistence of matched intents and normalization state. |
 | 2.26 | 2026-04 | **SA-080: Contextual Anchor Validation**: Hardened intent-persistence across the ingress-egress boundary. Ingress matched intent now determines the `EgressAnchor` (e.g. `TaskTranslation` -> `TextOnly`). Updated Channel F to block code fragments in text-only contexts. |
 | 2.25 | 2026-04 | Pillar 6 Streaming Egress (SA-079): Added experimental `streaming-egress` feature. Introduces Aho-Corasick overlap-buffer scanning across SSE chunks. Added H-19 (Streaming egress payload fragment), SR-024 (Aho-Corasick 256-byte overlap), and OC-13 (Pattern anchor length validation). |
 | 2.24 | 2026-04 | Per-Tenant Voter Hardening (SA-NEW): New `on_diagnostic_agreement` configuration field. High-sensitivity tenants (finance, PII, healthcare) can set `fail_closed` to escalate `DiagnosticAgreement` to a hard `Block`. Default `pass_and_log` preserves existing behaviour for all tenants. New hazard H-18, safety requirement SR-023, operational constraint OC-12. |
@@ -158,11 +159,11 @@ Safety Action SA-050. Fast-Semantic Prototype mit eingebetteten Vektor-Tabellen 
 
 **Architectural Safeguards for Channel D:**
 
-- **Centroid Hash Tripwire:** An `EXPECTED_CENTROID_HASH` constant (`0e59a67a83424697...`) creates a compile-time link between binary and semantic data. Prevents "centroid drift" where the semantic boundary shifts without an audit trail or CI failure.
-- **Subword-Level Defense:** Implements static subword embeddings (n-gram lookup) to detect semantically relevant fragments (e.g., "m4lware" via "mal" + "ware" overlap) even if character-level obfuscation survived the normalization pipeline.
-- **Fast-Semantic Path:** Prototype implemented in `semantic.rs` demonstrates <50us latency (benchmarked at 31us on Enterprise Attack Corpus) by using sparse FNV-1a 4-gram embeddings.
-- **Advisory-Only Mode:** Currently gates no verdicts, preventing unverified ML behavior from impacting safety-critical paths.
-- **Portable Architecture:** Fast path is decoupled from heavyweight ONNX dependencies, allowing zero-cost semantic monitoring even in latency-constrained environments.
+- **Centroid Hash Tripwire:** An `EXPECTED_CENTROID_HASH` constant (`"BOOTSTRAPPED-128"`) creates a compile-time link between binary and semantic data. Prevents "centroid drift" where the semantic boundary shifts without an audit trail or CI failure.
+- **Subword-Level Defense:** Implements 128-dimensional sparse subword embeddings (FNV-1a 4-gram lookup) to detect semantically relevant fragments even if character-level obfuscation survived the normalization pipeline.
+- **Fast-Semantic 2.0:** Implementation in `semantic.rs` demonstrates sub-millisecond latency (<100us) by using sparse bit-vector overlaps instead of Transformer inference.
+- **Advisory-Only Mode:** Currently gates no verdicts by default, but can be configured to block via `semantic_enforce_threshold`.
+- **Portable Architecture:** Zero-dependency path suitable for WASM and Proxy-Wasm environments.
 
 #### 3.5.1 Centroid Generation and Traceability (IMPLEMENTED)
 
@@ -173,9 +174,9 @@ Channel D uses **production-grade semantic centroids** derived via the IEC 61508
 - JailbreakBench: 15 jailbreak prompts (DAN mode, developer mode, fictional framing)
 
 **2. Feature Extraction:**
-- Model: `sentence-transformers/all-MiniLM-L6-v2` (frozen, not fine-tuned)
-- Dimensions: 384-dim sentence embeddings
-- Method: Mean pooling over token embeddings
+- Model: `Fast-Semantic 2.0` (Native Rust Sparse Embedding)
+- Dimensions: 128-dim sparse bit-vectors
+- Method: FNV-1a Hashed 4-gram sliding window
 
 **3. Clustering:**
 - Algorithm: K-Means with k=8 clusters
@@ -187,16 +188,16 @@ Channel D uses **production-grade semantic centroids** derived via the IEC 61508
 |----|----------|-------------|
 | 0 | MalwareCreation | Creating viruses, trojans, malicious software |
 | 1 | SystemIntrusion | Hacking, unauthorized access, bypassing security |
-| 2 | SocialEngineering | Phishing, manipulation, credential harvesting |
-| 3 | HarmfulContent | Physical harm, weapons, dangerous substances |
-| 4 | JailbreakAttempt | DAN mode, developer mode, "do anything now" |
-| 5 | UnauthorizedAccess | Breaking into systems, accounts, devices |
-| 6 | IdentityTheft | Stealing credentials, credit cards, PII |
-| 7 | PhysicalHarm | Violence, injury, dangerous acts |
+| 2 | SocialEngineering | Manipulation, coercion, psychological framing |
+| 3 | JailbreakAttempt | DAN mode, developer mode, prompt injection framing |
+| 4 | DataExtraction | Exfiltrating secrets, keys, or internal data |
+| 5 | FramingBypass | Translation/Creative wrappers for hidden payloads |
+| 6 | PhishingAids | Urgency-based login theft and credential harvesting |
+| 7 | DependencyConfusion | Internal package shadowing and registry hijacking |
 
 **5. Hard-Coding:**
-- Centroids frozen as `const [f32; 384]` in `semantic_generated.rs`
-- File size: ~33KB (8 centroids × 384 dimensions × 4 bytes)
+- Centroids frozen as `const [f32; 128]` in `semantic_generated.rs`
+- File size: ~12KB (8 centroids × 128 dimensions × 4 bytes)
 
 **6. Tripwire:**
 ```rust

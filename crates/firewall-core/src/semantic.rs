@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 // Include generated centroids (16 clusters, 128 dimensions)
 #[path = "semantic_generated.rs"]
 mod semantic_generated;
-pub use semantic_generated::{ATTACK_CENTROIDS, CENTROID_DIMENSIONS};
+pub use semantic_generated::{ATTACK_CENTROIDS, CENTROID_DIMENSIONS, EXPECTED_CENTROID_HASH};
 
 #[cfg(feature = "semantic-bert")]
 static BERT_SESSION: OnceLock<Option<Session>> = OnceLock::new();
@@ -130,6 +130,7 @@ fn category_to_str(id: &semantic_generated::CentroidId) -> &'static str {
 
 /// Verify centroid hash matches expected value.
 fn verify_centroid_hash() -> Result<(), String> {
+    // 8 Centroids expansion complete (Rev 2.27)
     if ATTACK_CENTROIDS.is_empty() {
         return Err("No attack centroids loaded".to_string());
     }

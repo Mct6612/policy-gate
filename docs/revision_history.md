@@ -13,7 +13,9 @@ The original in-manual history covered revisions `0.1` through `2.20`, including
 - egress firewall introduction
 - multiline and session-aware evaluation features
 - coverage, gap-analysis, and verification alignment updates
-- module-structure refactors aligning `lib.rs` with `init.rs`, `conversation.rs`,
+- Fast-Semantic 2.0 Expansion: Increased to 8 centroids (added `PhishingAids` and `DependencyConfusion`). Calibrated default `semantic_threshold` to 0.60 for improved recall.
+- API Hardening: Enforced mutable borrowing for `PromptInput` across the entire core evaluation pipeline to ensure stateful persistence of matched intents and normalization state.
+- Module-structure refactors aligning `lib.rs` with `init.rs`, `conversation.rs`,
   `ingress.rs`, `verdict_build.rs`, and `egress.rs`
 
 If you want the full detailed row-by-row log preserved here, it can be pasted

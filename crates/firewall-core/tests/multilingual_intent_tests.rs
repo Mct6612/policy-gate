@@ -9,8 +9,8 @@ use firewall_core::*;
 
 fn eval(text: &str, seq: u64) -> Verdict {
     let _ = init();
-    let input = PromptInput::new(text).expect("PromptInput::new failed");
-    evaluate(input, seq)
+    let mut input = PromptInput::new(text).expect("PromptInput::new failed");
+    evaluate(&mut input, seq)
 }
 
 #[test]
