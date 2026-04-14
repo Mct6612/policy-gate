@@ -989,7 +989,7 @@ pub static RULE_TABLE: &[Rule] = &[
         evaluate: |input| {
             if ends_with_question_mark(input)
                 && word_count(input) <= 40
-                && contains_any_ci(
+                && starts_with_any_ci(
                     input,
                     &[
                         "what",
@@ -1004,6 +1004,10 @@ pub static RULE_TABLE: &[Rule] = &[
                         "can you explain",
                         "could you explain",
                         "please explain",
+                        // Multilingual prefixes (SA-066 / Gap 3)
+                        "was", "wer", "wo", "wann",
+                        "que", "qui", "où", "quand",
+                        "qué", "quién", "dónde", "cuándo",
                     ],
                 )
             {

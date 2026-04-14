@@ -148,7 +148,7 @@ fn e2e_session_timeout_and_cleanup() {
     // Add some messages
     for i in 1..=3 {
         let input = PromptInput::new(&format!("Message {}", i)).expect("Valid input");
-        manager.add_message(session_id, &input, VerdictKind::Pass, None);
+        manager.add_message(session_id, &input, VerdictKind::Pass, None, None);
     }
     
     // Verify session exists

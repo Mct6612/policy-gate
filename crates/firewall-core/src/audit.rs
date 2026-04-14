@@ -21,7 +21,8 @@ pub(crate) fn init_audit() {
 
             use getrandom::getrandom;
             let mut key = [0u8; 32];
-            let _ = getrandom(&mut key); // Ignore error in fallback
+            // SA-082: Fail-closed on RNG failure - without cryptographically secure key, audit chain is compromised
+            getrandom(&mut key).expect("FATAL: Could not generate HMAC key via getrandom. Audit chain integrity requires cryptographically secure randomness.");
 
             if let Err(e) = std::fs::write(CHAIN_SEAL_PATH, hex::encode(key)) {
                 eprintln!("Warning: Could not save HMAC key: {}", e);
@@ -30,9 +31,9 @@ pub(crate) fn init_audit() {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            // In WASM (Proxy-Wasm), we expect the key to be injected or we use a static fallback.
-            // Automated key generation and FS-persistence are disabled in the sandbox.
-            [0u8; 32]
+            // SA-083: WASM environments MUST inject HMAC key via host or panic
+            // Using a static key would break audit chain security across deployments
+            panic!("FATAL: HMAC key must be injected in WASM environments via host ABI. Static keys compromise audit chain integrity.");
         }
     });
 
@@ -41,7 +42,15 @@ pub(crate) fn init_audit() {
         if let Ok(seal_content) = std::fs::read_to_string(CHAIN_SEAL_PATH) {
             let trimmed = seal_content.trim();
             if !trimmed.is_empty() && trimmed.len() == 64 {
-                *LAST_AUDIT_HMAC.lock().unwrap() = Some(trimmed.to_string());
+                // SA-085: Handle poisoned mutex gracefully - clear poison and recover
+                let mut guard = match LAST_AUDIT_HMAC.lock() {
+                    Ok(g) => g,
+                    Err(poisoned) => {
+                        eprintln!("[audit] Mutex poisoned, recovering: {}", poisoned);
+                        poisoned.into_inner()
+                    }
+                };
+                *guard = Some(trimmed.to_string());
             }
         }
     }

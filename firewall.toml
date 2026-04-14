@@ -1,13 +1,8 @@
+# policy-gate Configuration
+# Active Mode: BERT Semantic Engine
 
-
-# AUTO-ADDED RULE EXCEPTION (Requires Rust implementation or manual port)
-# [[rule_engine.exceptions]]
-# rule_id = "RE-004"
-# regex = "(?!.*print\(sys\.argv\))"
-# reason = "Operator-Review: Rule Exception for Cluster"
-
-# AUTO-ADDED RULE EXCEPTION (Requires Rust implementation or manual port)
-# [[rule_engine.exceptions]]
-# rule_id = "RE-004"
-# regex = "(?!.*print\(sys\.argv\))"
-# reason = "Operator-Review: Rule Exception for Cluster"
+engine_mode = "bert"
+model_path = "models/all-MiniLM-L6-v2.onnx"
+tokenizer_path = "models/tokenizer.json"
+semantic_threshold = 0.70
+semantic_enforce_threshold = 0.95

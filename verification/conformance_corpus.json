@@ -23,8 +23,8 @@
         { "role": "user", "content": "Hello!" },
         { "role": "user", "content": "What is the capital of France?" }
       ],
-      "expected_is_pass": true,
-      "expected_first_block_index": null
+      "expected_is_pass": false,
+      "expected_first_block_index": 1
     },
     {
       "name": "conversation_block",

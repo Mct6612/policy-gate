@@ -7,6 +7,7 @@ use crate::types::{
     Verdict, VerdictKind,
 };
 use std::sync::OnceLock;
+use subtle::ConstantTimeEq;
 
 // Mirrors the napi-layer guard (SA-021) for direct firewall-core callers.
 // evaluate() and evaluate_raw() both check this before running any channel.
@@ -34,7 +35,8 @@ pub fn init_with_token(
     token: &str,
     profile: FirewallProfile,
 ) -> Result<(), crate::FirewallInitError> {
-    if token != INIT_TOKEN {
+    // SA-081: Constant-time comparison to prevent timing attacks on token verification
+    if !bool::from(token.as_bytes().ct_eq(INIT_TOKEN.as_bytes())) {
         return Err(crate::FirewallInitError::UnauthorizedInit(
             "Init token mismatch - possible race-to-init attack or misconfiguration. \
              Ensure POLICY_GATE_INIT_TOKEN was set at build time."
@@ -66,7 +68,8 @@ pub fn init_with_config(
     token: &str,
     config: config::FirewallConfig,
 ) -> Result<(), crate::FirewallInitError> {
-    if token != INIT_TOKEN {
+    // SA-081: Constant-time comparison to prevent timing attacks on token verification
+    if !bool::from(token.as_bytes().ct_eq(INIT_TOKEN.as_bytes())) {
         return Err(crate::FirewallInitError::UnauthorizedInit(
             "Init token mismatch".into(),
         ));
@@ -102,16 +105,14 @@ fn init_with_profile_internal(
     } else {
         // Legacy/Default path: load firewall.toml as the 'default' tenant
         if let Ok(mut cfg) = config::FirewallConfig::load() {
-             if cfg.permitted_intents.is_none() {
-                 cfg.permitted_intents = profile_intents;
-             }
+             apply_defaults(&mut cfg, profile_intents);
              if let Ok(mut lock) = registry.write() {
                 lock.insert("default".into(), cfg.clone());
             }
         } else {
             // No file config, use internal defaults + profile
             let mut cfg = config::FirewallConfig::default();
-            cfg.permitted_intents = profile_intents;
+            apply_defaults(&mut cfg, profile_intents);
             if let Ok(mut lock) = registry.write() {
                 lock.insert("default".into(), cfg);
             }
@@ -120,6 +121,7 @@ fn init_with_profile_internal(
 
     let result = INIT_RESULT.get_or_init(|| {
         // SA-077: Initialize config watcher for the default config if it exists
+        #[cfg(not(test))]
         if let Some(default_cfg) = get_config_for_tenant(None) {
             crate::config_watcher::init_config_watcher(default_cfg.clone());
             
@@ -141,6 +143,7 @@ fn init_with_profile_internal(
 
         #[cfg(feature = "semantic")]
         {
+            println!("INIT: Starting Channel D (Semantic)");
             crate::semantic::ChannelD::init()
                 .map_err(|e| format!("Channel D init failed: {}", e))?;
         }
@@ -163,7 +166,8 @@ pub fn init_multi_tenant_registry<P: AsRef<std::path::Path>>(
     token: &str,
     dir_path: P,
 ) -> Result<(), crate::FirewallInitError> {
-    if token != INIT_TOKEN {
+    // SA-081: Constant-time comparison to prevent timing attacks on token verification
+    if !bool::from(token.as_bytes().ct_eq(INIT_TOKEN.as_bytes())) {
         return Err(crate::FirewallInitError::UnauthorizedInit("Token mismatch".into()));
     }
 
@@ -220,9 +224,12 @@ pub(crate) fn is_initialised() -> bool {
     matches!(INIT_RESULT.get(), Some(Ok(())))
 }
 
-pub(crate) fn active_profile_intents() -> Option<&'static Vec<MatchedIntent>> {
-    // This helper is being deprecated in favor of per-tenant config in orchestrator.rs
-    None
+/// Returns the permitted intents from the default tenant configuration.
+/// This provides backward compatibility for callers that need the global profile view.
+/// For multi-tenant deployments, prefer `get_config_for_tenant()` with explicit tenant_id.
+pub fn active_profile_intents() -> Option<Vec<MatchedIntent>> {
+    get_config_for_tenant(None)
+        .and_then(|cfg| cfg.permitted_intents)
 }
 
 /// Synthesises the fail-closed verdict used by direct callers before successful init.
@@ -268,3 +275,15 @@ pub(crate) fn uninitialised_block(sequence: u64, now: u128) -> Verdict {
         ),
     }
 }
+
+/// Populates missing configuration fields with default values from the profile.
+pub(crate) fn apply_defaults(cfg: &mut config::FirewallConfig, profile_intents: Option<Vec<MatchedIntent>>) {
+    if cfg.permitted_intents.is_none() {
+        cfg.permitted_intents = profile_intents;
+    }
+    if cfg.allow_anonymous_tenants.is_none() {
+        // Pillar 5: Default to true for anonymous access if not explicitly disabled.
+        cfg.allow_anonymous_tenants = Some(true);
+    }
+}
+

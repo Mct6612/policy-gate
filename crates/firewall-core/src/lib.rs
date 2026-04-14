@@ -34,9 +34,12 @@ pub mod config;
 // SA-076: Session-Aware-Layer for Multi-Turn Conversation Memory.
 pub mod session;
 // SA-077: Hot-reload configuration watcher.
-mod config_watcher;
+pub mod config_watcher;
 // SA-079: Structured Input Evaluation (JSON/YAML/Templates).
 mod structured;
+// SA-NEW: Pillar 6 — Streaming Egress Scanner (Aho-Corasick, optional).
+#[cfg(feature = "streaming-egress")]
+pub mod stream_scanner;
 
 pub use advisory::{AdvisoryEvent, AdvisoryOpinion, ChannelC};
 pub use conversation::{evaluate_messages, evaluate_messages_windowed};
@@ -48,7 +51,13 @@ pub use types::*;
 pub use session::{SessionManager, SessionAnalysis, SessionRiskLevel, evaluate_with_session};
 
 // SA-077: Hot-reload config exports
-pub use config_watcher::{ConfigSnapshot, get_current_config, try_reload_config};
+pub use config_watcher::{ConfigSnapshot, get_current_config, try_reload_config, reload_tenant_directory};
+// SA-047: Profile exports for backward compatibility
+pub use init::active_profile_intents;
+
+// SA-NEW: Pillar 6 — Streaming egress public exports
+#[cfg(feature = "streaming-egress")]
+pub use stream_scanner::{StreamScanner, StreamEgressDecision, STREAM_EGRESS_OVERLAP_BYTES, STREAM_EGRESS_MAX_PATTERN_BYTES};
 
 use ingress::{pre_scan_block, prompt_input_or_block};
 use init::{is_initialised, uninitialised_block};
@@ -72,7 +81,10 @@ const DEFAULT_CACHE_CAPACITY: usize = 1000;
 
 fn get_cache() -> &'static Mutex<lru::LruCache<String, CachedResult>> {
     EVAL_CACHE.get_or_init(|| {
-        Mutex::new(lru::LruCache::new(std::num::NonZeroUsize::new(DEFAULT_CACHE_CAPACITY).unwrap()))
+        Mutex::new(lru::LruCache::new(
+            std::num::NonZeroUsize::new(DEFAULT_CACHE_CAPACITY)
+                .expect("DEFAULT_CACHE_CAPACITY must be > 0")
+        ))
     })
 }
 
@@ -115,7 +127,12 @@ pub fn init_with_token(token: &str, profile: FirewallProfile) -> Result<(), Fire
 ///
 /// Production callers should use `init_with_token()`.
 pub fn init() -> Result<(), FirewallInitError> {
-    init::init()
+    init::init()?;
+    // Pillar 6: initialise Aho-Corasick global searcher when the feature is compiled in.
+    #[cfg(feature = "streaming-egress")]
+    stream_scanner::init_global_scanner()
+        .map_err(FirewallInitError::PatternCompileFailure)?;
+    Ok(())
 }
 
 /// Initialise the firewall with a specific deployment profile.
@@ -415,7 +432,7 @@ mod tests {
         let v = eval("What is the speed of light?");
         assert!(v.audit.total_elapsed_us > 0);
         assert!(v.audit.input_hash.len() > 0);
-        assert_eq!(v.audit.schema_version, 2);
+        assert_eq!(v.audit.schema_version, 3);
     }
 
     #[test]
@@ -457,6 +474,7 @@ mod tests {
                 elapsed_us: 3,
                 similarity: None,
             },
+            None,
         );
         assert!(test_entry.channel_a_result.is_some(), "Detailed entry must have Channel A result");
         assert!(test_entry.channel_b_result.is_some(), "Detailed entry must have Channel B result");
@@ -528,6 +546,9 @@ mod tests {
 
         // German
         let v_de = evaluate_raw("Wer ist der Präsident der USA?", 1);
+        if !v_de.is_pass() {
+            println!("DEBUG: German test failed. Verdict: {:?}, Reason: {:?}", v_de.kind, v_de.audit.block_reason);
+        }
         assert!(v_de.is_pass(), "German factual question should pass");
         assert!(v_de.audit.input_hash.len() > 0);
         // "Wer ist " translates to "who is ", matching IP-001/RE-010
@@ -564,6 +585,7 @@ mod tests {
                 1_000_000 * seq as u128,
                 1_000_001 * seq as u128,
                 42,
+                None,
             )
         };
 

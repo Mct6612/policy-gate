@@ -52,11 +52,45 @@
 # Audit detail level: "basic" (default) or "detailed" (for side-by-side analysis).
 # audit_detail_level = "basic"
 
+# Voter policy for DiagnosticAgreement events (both channels Pass, but disagree on intent).
+#
+#   pass_and_log  — (default) allow the request through and queue for operator review (SR-008).
+#   fail_closed   — escalate to a hard Block. Recommended for high-sensitivity tenants
+#                   (e.g. financial data, PII, healthcare) where any intent ambiguity is
+#                   unacceptable. Note: increases false-positive rate; review your intent
+#                   patterns before enabling.
+#
+# on_diagnostic_agreement = "pass_and_log"
+
+# ── High-sensitivity tenant example ──────────────────────────────────────────
+# Uncomment the block below for a finance or PII-heavy tenant profile:
+#
+# tenant_id = "finance-prod"
+# allow_anonymous_tenants = false
+# on_diagnostic_agreement = "fail_closed"
+# audit_detail_level = "detailed"
+# semantic_enforce_threshold = 0.85
+
+# ─── Streaming Egress (Pillar 6 — experimental) ───────────────────────────────
+#
+# Requires proxy compiled with --features streaming-egress.
+# When false (default), requests with "stream: true" are rejected with HTTP 400.
+# When true, the proxy applies streaming egress scanning via Aho-Corasick.
+#
+# WARNING: This is an experimental feature. The fail-closed guarantee applies
+# at the chunk boundary level (overlap buffer size: 256 bytes). Patterns longer
+# than 127 bytes will not be reliably detected across chunk boundaries.
+#
+# streaming_egress_enabled = false
+# streaming_egress_final_check = true
+
+
 # ─── Semantic Analysis (Channel D - Feature: semantic) ─────────────────────────
 
+# semantic_engine_mode = "fast"     # "fast" (default, deterministic) or "bert" (ML-based).
 # semantic_threshold = 0.70         # Similarity score to trigger advisory tagging.
 # semantic_enforce_threshold = 1.0  # Similarity score to trigger a Hard-Block.
-# semantic_model_path = "models/all-MiniLM-L6-v2.onnx"
+# semantic_model_path = "models/all-MiniLM-L6-v2.safetensors"
 # tokenizer_path = "models/tokenizer.json"
 
 # ─── Notes ────────────────────────────────────────────────────────────────────

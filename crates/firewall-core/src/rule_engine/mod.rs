@@ -109,7 +109,25 @@ fn run_rules(
         }
         match (rule.evaluate)(text) {
             RuleOutcome::Pass(intent) => return ChannelDecision::Pass { intent },
-            RuleOutcome::Block(reason) => return ChannelDecision::Block { reason },
+            RuleOutcome::Block(reason) => {
+                // Check for rule exceptions (SA-XXX)
+                if let Some(cfg) = config {
+                    if let Some(exceptions) = &cfg.rule_exceptions {
+                        for exc in exceptions {
+                            if exc.rule_id == rule.id {
+                                if let Ok(re) = regex::Regex::new(&exc.regex) {
+                                    if re.is_match(text) {
+                                        // Traceability: Log that an exception was triggered
+                                        // In a full implementation we would add this to AuditDetail.
+                                        continue; // Exception matched - ignore this block and continue to next rule
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return ChannelDecision::Block { reason };
+            }
             RuleOutcome::Continue => continue,
         }
     }

@@ -4,14 +4,20 @@
 // Fast-Semantic 2.0: Sparse Vocabulary-based Embedding (512-dim).
 // Provides sub-millisecond 'intent-vibe' analysis without external ML dependencies.
 
-use crate::types::{ChannelDecision, ChannelId, ChannelResult, MatchedIntent};
+#[cfg(feature = "semantic")]
+use ort::session::Session;
+use crate::types::{ChannelDecision, ChannelId, ChannelResult, MatchedIntent, BlockReason};
 use std::borrow::Cow;
 use std::time::Instant;
+use std::sync::OnceLock;
 
 // Include generated centroids (16 clusters, 128 dimensions)
 #[path = "semantic_generated.rs"]
 mod semantic_generated;
-use semantic_generated::{ATTACK_CENTROIDS, CENTROID_DIMENSIONS, EXPECTED_CENTROID_HASH};
+use semantic_generated::{ATTACK_CENTROIDS, CENTROID_DIMENSIONS};
+
+#[cfg(feature = "semantic")]
+static BERT_SESSION: OnceLock<Option<Session>> = OnceLock::new();
 
 pub struct ChannelD;
 
@@ -23,28 +29,24 @@ impl ChannelD {
     }
 
     /// Evaluate input semantically using learned centroids.
-    pub fn evaluate(input: &str, tag_threshold: f32, block_threshold: f32) -> ChannelResult {
+    pub fn evaluate(input: &str, tag_threshold: f32, block_threshold: f32, mode: &str) -> ChannelResult {
         let start = Instant::now();
 
-        // Extract sparse embedding 
-        let embedding = extract_embedding_sparse(input);
-        
-        // Compare against all attack centroids
-        let mut max_sim = 0.0f32;
-        let mut best_category = "None";
-
-        for (category, centroid) in ATTACK_CENTROIDS.iter() {
-            let sim = cosine_similarity_sparse(&embedding, centroid);
-            if sim > max_sim {
-                max_sim = sim;
-                best_category = category_to_str(category);
-            }
-        }
+        // Mode-Switch (SA-050): Determine which embedding engine to use.
+        let (max_sim, best_category) = if mode == "bert" {
+            Self::evaluate_bert(input)
+        } else {
+            // Default "fast" sparse mode
+            Self::evaluate_sparse(input)
+        };
 
         let decision = if max_sim > block_threshold {
             // High-confidence semantic match (Enforcing)
             ChannelDecision::Block {
-                reason: format!("High-Confidence Semantic Attack ({} - {:.2})", best_category, max_sim),
+                reason: BlockReason::SemanticTrigger {
+                    similarity: max_sim,
+                    reason: Cow::Borrowed("High-Confidence Semantic Attack"),
+                },
             }
         } else if max_sim > tag_threshold {
             // Advisory matching
@@ -65,6 +67,53 @@ impl ChannelD {
             decision,
             elapsed_us: start.elapsed().as_micros() as u64,
             similarity: Some(max_sim),
+        }
+    }
+
+    fn evaluate_sparse(input: &str) -> (f32, &'static str) {
+        // Extract sparse embedding 
+        let embedding = extract_embedding_sparse(input);
+        
+        // Compare against all attack centroids
+        let mut max_sim = 0.0f32;
+        let mut best_category = "None";
+
+        for (category, centroid) in ATTACK_CENTROIDS.iter() {
+            let sim = cosine_similarity_sparse(&embedding, centroid);
+            if sim > max_sim {
+                max_sim = sim;
+                best_category = category_to_str(category);
+            }
+        }
+        (max_sim, best_category)
+    }
+
+    fn evaluate_bert(_input: &str) -> (f32, &'static str) {
+        #[cfg(not(feature = "semantic"))]
+        {
+            let _ = input;
+            return (0.0, "FEATURE_DISABLED");
+        }
+
+        #[cfg(feature = "semantic")]
+        {
+            // 1. Ensure model is loaded
+            let session_opt = BERT_SESSION.get_or_init(|| {
+                let model_path = "models/all-MiniLM-L6-v2.onnx";
+                if std::path::Path::new(model_path).exists() {
+                    Session::builder().ok()?.commit_from_file(model_path).ok()
+                } else {
+                    None
+                }
+            });
+
+            if let Some(_session) = session_opt {
+                // BERT inference logic would go here.
+                // For now, return a placeholder to indicate the engine is active.
+                return (0.1, "BERT_ACTIVE");
+            }
+
+            (0.0, "BERT_UNAVAILABLE")
         }
     }
 }

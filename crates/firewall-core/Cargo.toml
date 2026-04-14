@@ -17,6 +17,8 @@ default = []
 fips = ["dep:aws-lc-rs"]
 semantic = ["dep:ort", "dep:ndarray"]
 parallel = ["dep:rayon"]
+# Pillar 6: Streaming Egress — enables Aho-Corasick stream scanner
+streaming-egress = ["dep:aho-corasick"]
 
 [dependencies]
 serde = { workspace = true }
@@ -32,6 +34,12 @@ toml = "0.8"
 serde_json = "1"
 # SA-078: High-performance evaluation cache
 lru = "0.13"
+# SA-081: Constant-time comparison for token verification (timing attack protection)
+subtle = "2.5"
+# SA-084: Regex syntax parser for ReDoS analysis
+regex-syntax = "0.8"
+# SA-NEW: Pillar 6 — Aho-Corasick multi-pattern stream scanner (optional)
+aho-corasick = { version = "1", optional = true }
 
 # --- Channel D: Semantic Analysis ---
 ort = { version = "2.0.0-rc.3", optional = true }

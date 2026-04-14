@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use firewall_core::{evaluate_raw, init, config::FirewallConfig};
+use firewall_core::{evaluate_raw, init, init_with_token, config::FirewallConfig};
 use std::io::{self, BufRead};
 use std::path::PathBuf;
 
@@ -33,6 +33,15 @@ enum Commands {
         /// Path to the configuration file.
         path: PathBuf,
     },
+    /// Hot-reload multi-tenant configuration from a directory.
+    /// Requires POLICY_GATE_INIT_TOKEN for production use.
+    Reload {
+        /// Path to directory containing .toml tenant configs.
+        dir: PathBuf,
+        /// Optional init token for production reloads.
+        #[arg(short, long, env = "POLICY_GATE_INIT_TOKEN")]
+        token: Option<String>,
+    },
 }
 
 fn main() {
@@ -40,6 +49,13 @@ fn main() {
 
     match cli.command {
         Commands::Eval { config: _ } => {
+            // SA-077: Write PID file for hot-reload triggering from Python.
+            let pid_path = std::path::Path::new("/tmp/policy-gate.pid");
+            if let Some(parent) = pid_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(pid_path, std::process::id().to_string());
+
             // For now, eval still uses standard init() which loads firewall.toml.
             init().expect("firewall init failed");
 
@@ -80,6 +96,46 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("Failed to load {}: {}", path.display(), e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Reload { dir, token } => {
+            // Initialize firewall with token if provided (production)
+            let init_result = if let Some(t) = token {
+                init_with_token(&t, firewall_core::FirewallProfile::Default)
+            } else {
+                init()
+            };
+            
+            if let Err(e) = init_result {
+                eprintln!("Firewall initialization failed: {}", e);
+                std::process::exit(1);
+            }
+            
+            // SA-077: Audit log entry for reload operation
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            eprintln!("[AUDIT] Multi-tenant reload initiated at {} for dir: {}", 
+                timestamp, dir.display());
+            
+            // Perform the reload with staged validation (fail-closed)
+            match firewall_core::config_watcher::reload_tenant_directory(&dir) {
+                Ok(changed) => {
+                    if changed {
+                        println!("Multi-tenant configuration reloaded successfully from {}.", dir.display());
+                        // SA-077: Clear evaluation cache after successful reload
+                        eprintln!("[AUDIT] Evaluation cache cleared after reload.");
+                    } else {
+                        println!("No configuration changes detected in {}.", dir.display());
+                    }
+                }
+                Err(e) => {
+                    // Fail-closed: Log error but keep existing config active
+                    eprintln!("[AUDIT] Reload failed, existing configuration preserved: {}", e);
+                    eprintln!("Configuration reload failed: {}", e);
                     std::process::exit(1);
                 }
             }

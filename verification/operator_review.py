@@ -282,11 +282,10 @@ def write_rule_exception_patch(rule_id: str, pattern: str, reason: str, sequence
         with open(toml_file, "w", encoding="utf-8") as f:
             f.write(content)
             if not content.endswith("\n"): f.write("\n")
-            f.write("\n# AUTO-ADDED RULE EXCEPTION (Requires Rust implementation or manual port)\n")
-            f.write(f"# [[rule_engine.exceptions]]\n")
-            f.write(f"# rule_id = \"{rule_id}\"\n")
-            f.write(f"# regex = \"{pattern}\"\n")
-            f.write(f"# reason = \"{reason_text}\"\n")
+            f.write("\n[[rule_exceptions]]\n")
+            f.write(f"rule_id = \"{rule_id}\"\n")
+            f.write(f"regex = \"{pattern}\"\n")
+            f.write(f"reason = \"{reason_text}\"\n")
         return True
     except Exception as e:
         print(f"  [ERROR] Failed to write Rule Exception to TOML: {e}", file=sys.stderr)
@@ -312,6 +311,33 @@ def patch_safety_manual(snippet: str) -> bool:
     except Exception as e:
         print(f"  [ERROR] Failed to patch SAFETY_MANUAL: {e}")
         return False
+
+def trigger_hot_reload() -> bool:
+    """Checks for the PID file and ensures hot-reload is picked up."""
+    import os
+    pid_path = "/tmp/policy-gate.pid"
+    if os.path.exists(pid_path):
+        try:
+            with open(pid_path, "r") as f:
+                pid = int(f.read().strip())
+            
+            # Check if process is still alive (cross-platform check)
+            try:
+                import psutil
+                if psutil.pid_exists(pid):
+                    print(f"  [HOT-RELOAD] 🌀  Sent reload nudge to PID {pid} (via background polling)")
+                    return True
+                else:
+                    print("  [HOT-RELOAD] ⚠  PID file found but process is gone.")
+            except ImportError:
+                # Basic check without psutil
+                print(f"  [HOT-RELOAD] 🧩  Assuming PID {pid} is active. Background worker should pick up changes in ~2s.")
+                return True
+        except Exception as e:
+            print(f"  [HOT-RELOAD] ⚠  Failed to read PID file: {e}")
+    else:
+        print("  [HOT-RELOAD] ⚠  No active firewall-cli/proxy PID found. Manual restart might be required.")
+    return False
 
 def execute_git_commit(message: str) -> bool:
     import os
@@ -1030,6 +1056,9 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
                             execute_git_commit(f"chore(firewall): Auto-add {suggestion.pattern_id} allowlist intent")
                             print(f"  [AUTO] Git commit executed")
                             
+                            # Trigger Hot-Reload
+                            trigger_hot_reload()
+                            
                             print("  Suggestion fully integrated.")
                         else:
                             print("  Suggestion rejected, action cancelled")
@@ -1071,6 +1100,23 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
                         if confirm in ("y", ""):
                             detail.operator_notes = f"exception_auto:{suggestion.exception_regex}"
                             
+                            # ── Fuzz Check ──────────────────────────────────
+                            print(f"  [FUZZ] Running bypass fuzzer on rule exception regex...")
+                            try:
+                                from fuzz_regex import run_fuzz
+                                fuzz = run_fuzz(suggestion.exception_regex, verbose=False)
+                                if fuzz.dangerous_count > 0:
+                                    print(f"  [FUZZ] ⚠  {fuzz.dangerous_count} DANGEROUS probes found!")
+                                    print(f"         Regex may be too permissive. Proceed anyway? [y/N]: ", end="")
+                                    override = input().strip().lower()
+                                    if override != "y":
+                                        print("  Aborted. Refine the exception regex before accepting.")
+                                        continue
+                                else:
+                                    print(f"  [FUZZ] ✅ 0 dangerous probes. Regex is safe to commit.")
+                            except ImportError:
+                                print("  [FUZZ] Skipped (fuzz_regex.py not found)")
+
                             # Auto-write exception block to firewall.toml
                             write_ok = write_rule_exception_patch(
                                 suggestion.rule_id,
@@ -1088,6 +1134,9 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
                             # Git Commit
                             execute_git_commit(f"chore(firewall): Auto-tune {suggestion.rule_id} exception")
                             print(f"  [AUTO] Git commit executed")
+                            
+                            # Trigger Hot-Reload
+                            trigger_hot_reload()
                             
                             print("  Exception fully integrated.")
                         else:

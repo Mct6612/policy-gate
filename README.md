@@ -22,6 +22,8 @@ It is designed for teams that want predictable enforcement, auditable decisions,
 - **shadow mode**: safe deployment and observability without active blocking
 - advisory heuristics and semantic analysis kept outside the safety path
 - optional session-aware analysis for multi-turn escalation patterns
+- **[experimental] Streaming Egress**: safe Aho-Corasick chunk scanning across SSE boundaries
+- **configurable voter strictness per tenant**: `on_diagnostic_agreement = "fail_closed"` for high-sensitivity workflows
 - Rust core with Node, Python, WASM, and **Proxy-Wasm** targets
 
 ## Best fit
@@ -98,7 +100,31 @@ if (!verdict.isPass) {
 import { Firewall } from "policy-gate";
 
 const firewall = await Firewall.create({
-  onAudit: async (entry) => {
+  onAudit: (entry) => console.log(entry),
+});
+
+// Evaluate within a session context to detect multi-turn patterns
+const verdict = await firewall.evaluateWithSession(
+  "user-session-123",
+  "How do I access the system configuration?"
+);
+
+if (verdict.sessionAnalysis.riskLevel === "High") {
+  console.warn("High escalation risk detected in session!");
+  // The session layer provides detailed indicators:
+  // - PolicyTesting: Repeated similar prompts (Jaccard similarity > 0.8)
+  // - TopicDrift: Abrupt shifts in user intent
+  // - PayloadFragmentation: Suspected split payloads (e.g., unmatched braces)
+}
+```
+
+## Pillars of safety
+
+1.  **Deterministic Path**: The core safety function uses FSMs and rule engines, not probabilistic models.
+2.  **Diverse Redundancy**: A 1oo2D voter ensures that even if one channel fails or has a gap, the system remains safe (fail-closed).
+3.  **Normalisation-First**: All inputs are normalised (NFKC, homoglyph mapping, separator stripping) before evaluation.
+4.  **Session-Aware Monitor**: Detects multi-turn escalation patterns like payload fragmentation and policy probing.
+5.  **Multi-Tenant Hub**: Isolated security profiles and per-tenant audit logs for SaaS environments.  onAudit: async (entry) => {
     await db.audit.insert(entry);
   },
 });
@@ -181,7 +207,7 @@ App → POST /v1/chat/completions
 ```
 
 > [!WARNING]
-> **Streaming constraints:** The `firewall-proxy` rejects requests containing `"stream": true` with HTTP 400. Streaming responses arrive in partial chunks, making it impossible to evaluate the complete response before delivery — this would violate the fail-closed egress safety guarantee.
+> **Streaming constraints:** By default, the `firewall-proxy` rejects requests containing `"stream": true` with HTTP 400. However, when compiled with `--features streaming-egress`, the proxy supports stateful Aho-Corasick scanning across SSE chunks. This enables safe streaming while maintaining fail-closed egress guarantees (with small latency trade-off for the overlap buffer).
 
 #### Observability — Prometheus metrics
 
@@ -200,7 +226,8 @@ Available metrics:
 | `policy_gate_blocked_total` | `reason=ingress_policy\|egress_policy\|malformed_input\|empty_content` | Block reason breakdown |
 | `policy_gate_streaming_rejected_total` | — | Rejected streaming requests |
 | `policy_gate_upstream_errors_total` | — | Upstream API connection failures |
-| `policy_gate_request_duration_ms` | `outcome=pass\|ingress_block\|egress_block` | End-to-end latency histogram |
+| `policy_gate_streaming_egress_blocks_total` | — | Total connections aborted due to egress pattern match |
+| `policy_gate_request_duration_ms` | `outcome=pass|ingress_block|egress_block` | End-to-end latency histogram |
 
 Example Prometheus scrape config:
 
@@ -238,8 +265,18 @@ cargo build --release -p firewall-cli
 ```
 
 - **`validate <file>`**: Deep-validation of a config file. Checks syntax and `RegexSet` compatibility.
-- **`diff <file1> <file2>`**: Structural comparison of two policies. Highlights added/removed rules and changed regexes.
+- **`diff <file1> <file2>`**: Structural comparison of two policies. Highlights added/removed rules, exceptions, and changed settings.
 - **`eval`**: Standard line-by-line evaluation from stdin (useful for benchmarks).
+- **`reload <dir> [--token TOKEN]`**: Hot-reload multi-tenant configurations from a directory. Staged validation ensures zero downtime; failures keep the previous config active. Supports `POLICY_GATE_INIT_TOKEN` for production authentication.
+
+Example reload:
+```bash
+# Reload all tenant configs from directory (development)
+firewall-cli reload ./policy-hub/
+
+# Production reload with token authentication
+POLICY_GATE_INIT_TOKEN=secret firewall-cli reload /etc/policy-gate/tenants/
+```
 
 Example diff:
 ```bash
@@ -367,7 +404,20 @@ let prompts = vec![
 let results = evaluate_batch_parallel(prompts, 0);
 ```
 
-### Performance
+### Setup BERT for Semantic Analysis (Optional)
+
+If you want to use the ML-based BERT mode for Channel D, run the setup script:
+
+```bash
+pip install huggingface_hub
+python scripts/setup_bert.py
+```
+
+This will automatically check your `firewall.toml` and download the necessary model files from HuggingFace to the `models/` directory.
+
+### Performance & Benchmarking
+
+The core safety function is designed for ultra-low latency:
 
 - **Sequential**: 250+ req/s (sub-ms cache hits, ~3-4ms cold)
 - **Parallel (Rayon)**: scales with CPU cores (1,000+ req/s on 8-core)
@@ -438,6 +488,15 @@ This is an optional high-performance semantic layer:
 ### Egress firewall
 
 The output side validates model responses against the original prompt and checks for leakage, framing signals, and PII-like content. It uses a two-channel fail-closed design separate from the ingress path.
+
+#### Streaming Egress (Pillar 6)
+
+For high-concurrency streaming applications, `policy-gate` provides a stateful Aho-Corasick scanner (`StreamScanner`) that operates across SSE chunk boundaries.
+- **Overlap Buffer**: Maintains a 256-byte tail of the previous chunk to detect patterns split across packets.
+- **Fail-Closed Teardown**: If a forbidden pattern is detected mid-stream, the proxy immediately:
+    1. Sends a final SSE error event.
+    2. Aborts the TCP connection (`RST_STREAM`) to prevent the browser from rendering the leaked chunk.
+- **Config**: Toggle via `streaming_egress_enabled` in `firewall.toml`.
 
 ## Why it feels different from typical guardrails
 
@@ -580,6 +639,26 @@ The project supports:
 - TOML-based configuration via [firewall.example.toml](./firewall.example.toml)
 
 The design is multi-tenant at the policy layer and single-tenant at the safety decision core.
+
+### Voter Strictness Per Tenant
+
+By default, when both channels agree a prompt is safe but disagree on the matched intent (`DiagnosticAgreement`), the request is allowed through and queued for operator review.
+
+For tenants processing **financial data, PII, or healthcare records**, any intent ambiguity is unacceptable. Set `on_diagnostic_agreement = "fail_closed"` to escalate these events to a hard Block:
+
+```toml
+# policy-hub/tenants/finance-prod.toml
+tenant_id = "finance-prod"
+allow_anonymous_tenants = false
+on_diagnostic_agreement = "fail_closed"
+audit_detail_level = "detailed"
+semantic_enforce_threshold = 0.85
+```
+
+| Value | Behaviour | Recommended for |
+|---|---|---|
+| `pass_and_log` | Allow through, queue for 72h review (default) | General tenants |
+| `fail_closed` | Escalate `DiagnosticAgreement` to `Block` | Finance, PII, healthcare |
 
 ### Policy-Hub - Fertige TOML-Profile
 

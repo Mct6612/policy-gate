@@ -34,7 +34,7 @@ fn test_multi_tenant_isolation() {
     init_with_config(token, config_b).expect("Init B failed");
 
     // Request for A with 'apple' should block
-    let v_a = evaluate_raw_for_tenant("Hello apple", 2, Some("tenant-a".into()));
+    let v_a = evaluate_raw_for_tenant("The apple", 2, Some("tenant-a".into()));
     assert_eq!(v_a.kind, VerdictKind::Block, "Tenant A should block 'apple'");
 
     // Request for B with 'apple' should pass (now matched as greeting by BOTH channels)
@@ -43,7 +43,7 @@ fn test_multi_tenant_isolation() {
     assert_eq!(v_b.kind, VerdictKind::Pass, "Tenant B should allow 'Hello'");
     
     // Request for B with 'banana' should block
-    let v_b2 = evaluate_raw_for_tenant("Hello banana", 4, Some("tenant-b".into()));
+    let v_b2 = evaluate_raw_for_tenant("The banana", 4, Some("tenant-b".into()));
     assert_eq!(v_b2.kind, VerdictKind::Block, "Tenant B should block 'banana'");
 }
 

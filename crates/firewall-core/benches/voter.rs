@@ -18,6 +18,7 @@ fn code_request() -> &'static str {
     "Write a function that sorts an array"
 }
 
+#[allow(dead_code)]
 fn greeting() -> &'static str {
     "Hello, how are you today?"
 }

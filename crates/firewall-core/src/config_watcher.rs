@@ -41,6 +41,17 @@ pub(crate) fn init_config_watcher(initial_config: config::FirewallConfig) {
         file_hash,
     };
     let _ = CONFIG_STATE.get_or_init(|| RwLock::new(snapshot));
+
+    // SA-077: Background thread to poll for config changes.
+    // Interval: 2 seconds.
+    std::thread::spawn(|| {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if let Err(e) = try_reload_config() {
+                eprintln!("[SA-077] Hot-reload failed: {}", e);
+            }
+        }
+    });
 }
 
 /// Get the current configuration snapshot (read-only).
@@ -52,9 +63,12 @@ pub fn get_current_config() -> Option<ConfigSnapshot> {
 /// Returns Ok(true) if config was reloaded, Ok(false) if no changes detected,
 /// or Err if the new config is invalid (old config remains active).
 pub fn try_reload_config() -> Result<bool, String> {
-    let new_config = config::FirewallConfig::load()
+    let mut new_config = config::FirewallConfig::load()
         .map_err(|e| format!("Failed to load firewall.toml: {}", e))?;
     
+    // Apply defaults (e.g. allow_anonymous_tenants = true for legacy default config)
+    crate::init::apply_defaults(&mut new_config, None);
+
     let new_hash = compute_config_hash(&new_config);
     
     // Check if anything actually changed
@@ -112,7 +126,14 @@ pub fn reload_tenant_directory<P: AsRef<std::path::Path>>(dir_path: P) -> Result
             if path.extension().and_then(|s| s.to_str()) == Some("toml") {
                 if let Ok(cfg) = config::FirewallConfig::load_from_path(&path) {
                     let tenant_id = cfg.tenant_id.clone()
-                        .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
+                        .or_else(|| {
+                            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                            if stem == "firewall" {
+                                Some("default".into())
+                            } else {
+                                Some(stem.to_string())
+                            }
+                        })
                         .unwrap_or_else(|| "default".into());
                     
                     let new_hash = compute_config_hash(&cfg);
@@ -124,9 +145,11 @@ pub fn reload_tenant_directory<P: AsRef<std::path::Path>>(dir_path: P) -> Result
                     };
 
                     if should_reload {
-                        if cfg.validate().is_ok() {
+                        let mut cfg_mut = cfg;
+                        crate::init::apply_defaults(&mut cfg_mut, None);
+                        if cfg_mut.validate().is_ok() {
                             if let Ok(mut reg) = registry_lock.write() {
-                                reg.insert(tenant_id.clone(), cfg);
+                                reg.insert(tenant_id.clone(), cfg_mut);
                                 if let Ok(mut hashes) = hash_map_lock.write() {
                                     hashes.insert(tenant_id, new_hash);
                                 }
@@ -171,6 +194,22 @@ fn compute_config_hash(config: &config::FirewallConfig) -> u64 {
     // Hash context window
     config.context_window.hash(&mut hasher);
     
+    // Hash rule exceptions
+    if let Some(exceptions) = &config.rule_exceptions {
+        for exc in exceptions {
+            exc.rule_id.hash(&mut hasher);
+            exc.regex.hash(&mut hasher);
+            exc.reason.hash(&mut hasher);
+        }
+    }
+
+    // Hash tenant policy settings (SA-077: critical for anonymous access)
+    config.allow_anonymous_tenants.hash(&mut hasher);
+    config.shadow_mode.hash(&mut hasher);
+    config.audit_detail_level.map(|l| format!("{:?}", l).to_string()).hash(&mut hasher);
+    config.semantic_threshold.map(|f| (f * 1000.0) as i64).hash(&mut hasher);
+    config.semantic_enforce_threshold.map(|f| (f * 1000.0) as i64).hash(&mut hasher);
+
     hasher.finish()
 }
 
@@ -195,11 +234,11 @@ mod tests {
 
     #[test]
     fn test_config_hash_changes_with_keywords() {
-        let mut config1 = config::FirewallConfig::default();
+        let config1 = config::FirewallConfig::default();
         let mut config2 = config::FirewallConfig::default();
-        
+
         config2.forbidden_keywords = Some(vec!["test".to_string()]);
-        
+
         assert_ne!(compute_config_hash(&config1), compute_config_hash(&config2));
     }
 }

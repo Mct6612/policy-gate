@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use crate::types::{PromptInput, VerdictKind, BlockReason};
+use crate::types::{PromptInput, VerdictKind, BlockReason, MatchedIntent, ChannelDecision};
 
 /// Session context for multi-turn conversation memory.
 #[derive(Debug, Clone)]
@@ -27,7 +27,9 @@ pub struct SessionContext {
 pub struct SessionMessage {
     pub sequence: u64,
     pub timestamp_ns: u128,
+    pub input_text: String,
     pub input_hash: String,
+    pub matched_intent: Option<MatchedIntent>,
     pub verdict: VerdictKind,
     pub block_reason: Option<BlockReason>,
     pub escalation_indicators: Vec<EscalationIndicator>,
@@ -78,7 +80,14 @@ impl SessionManager {
     }
 
     /// Add message to session context and analyze for escalation patterns.
-    pub fn add_message(&self, session_id: &str, input: &PromptInput, verdict: VerdictKind, block_reason: Option<BlockReason>) -> SessionAnalysis {
+    pub fn add_message(
+        &self, 
+        session_id: &str, 
+        input: &PromptInput, 
+        verdict: VerdictKind, 
+        block_reason: Option<BlockReason>,
+        matched_intent: Option<MatchedIntent>,
+    ) -> SessionAnalysis {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
@@ -103,7 +112,9 @@ impl SessionManager {
         let message = SessionMessage {
             sequence: session.messages.len() as u64 + 1,
             timestamp_ns: now,
+            input_text: input.text.clone(),
             input_hash: crate::audit::sha256_hex(&input.text),
+            matched_intent,
             verdict,
             block_reason,
             escalation_indicators: self.analyze_message_indicators(&input.text, &session.messages),
@@ -171,8 +182,8 @@ impl SessionManager {
             .any(|msg| msg.escalation_indicators.contains(&EscalationIndicator::PayloadFragmentation));
     }
 
-    /// Generate session analysis with recommendations.
-    fn generate_analysis(&self, session: &SessionContext, current_message: &SessionMessage) -> SessionAnalysis {
+    /// Generate analysis
+    fn generate_analysis(&self, session: &SessionContext, _current_message: &SessionMessage) -> SessionAnalysis {
         let mut flags = Vec::new();
 
         // High escalation score
@@ -190,28 +201,43 @@ impl SessionManager {
             flags.push(SessionFlag::RapidEscalation);
         }
 
-        // Long session (potential for sophisticated attacks)
+        // Long session
         if session.messages.len() >= 8 {
             flags.push(SessionFlag::LongSession);
         }
 
-        // Determine risk level
-        let risk_level = match flags.len() {
-            0 => SessionRiskLevel::Low,
-            1..=2 => SessionRiskLevel::Medium,
-            _ => SessionRiskLevel::High,
+        // Determine risk level based on flags and score
+        let risk_level = if session.escalation_score >= 80 || flags.contains(&SessionFlag::RapidEscalation) {
+            SessionRiskLevel::High
+        } else if session.escalation_score >= 40 || flags.contains(&SessionFlag::FragmentationDetected) {
+            SessionRiskLevel::Medium
+        } else {
+            SessionRiskLevel::Low
         };
+
+        // Generate recommendations
+        let recommendations = self.generate_recommendations(&risk_level, &flags);
 
         SessionAnalysis {
             session_id: session.session_id.clone(),
-            message_sequence: current_message.sequence,
+            risk_level,
             escalation_score: session.escalation_score,
-            risk_level: risk_level.clone(),
+            flags,
             message_count: session.messages.len(),
             session_duration_ns: session.last_activity_ns - session.created_at_ns,
-            recommendations: self.generate_recommendations(&flags, risk_level.clone()),
-            flags,
+            recommendations,
         }
+    }
+
+    /// Get current analysis for a session.
+    pub fn get_analysis(&self, session_id: &str) -> Option<SessionAnalysis> {
+        let sessions = self.sessions.lock().unwrap();
+        if let Some(session) = sessions.get(session_id) {
+            if let Some(last_message) = session.messages.last() {
+                return Some(self.generate_analysis(session, last_message));
+            }
+        }
+        None
     }
 
     /// Clean up expired sessions.
@@ -246,48 +272,71 @@ impl SessionManager {
     }
 
     // Private helper methods for escalation detection
+    fn jaccard_similarity(&self, a: &str, b: &str) -> f32 {
+        let set_a: std::collections::HashSet<&str> = a.split_whitespace().collect();
+        let set_b: std::collections::HashSet<&str> = b.split_whitespace().collect();
+        
+        if set_a.is_empty() && set_b.is_empty() {
+            return 1.0;
+        }
+        
+        let intersection = set_a.intersection(&set_b).count();
+        let union = set_a.union(&set_b).count();
+        
+        intersection as f32 / union as f32
+    }
+
     fn is_complexity_escalation(&self, text: &str, previous_messages: &[SessionMessage]) -> bool {
         if previous_messages.is_empty() {
             return false;
         }
 
-        // Simple heuristic: check for increasing sentence length and complexity
+        // Check for increasing sentence length and complexity
         let avg_prev_length: usize = previous_messages
             .iter()
+            .rev()
             .take(3) // Last 3 messages
-            .map(|msg| {
-                // This would need the original text - using hash as proxy
-                msg.input_hash.len() // Rough proxy for complexity
-            })
-            .sum::<usize>() / previous_messages.len().clamp(1, 3);
+            .map(|msg| msg.input_text.len())
+            .sum::<usize>() / previous_messages.len().min(3).max(1);
 
         let current_length = text.len();
-        current_length > avg_prev_length * 2 // Double the average length
+        current_length > (avg_prev_length * 15) / 10 // 50% increase
     }
 
-    fn is_topic_drift(&self, _text: &str, _previous_messages: &[SessionMessage]) -> bool {
-        // TODO: Implement topic modeling or keyword analysis
-        // For now, placeholder implementation
-        false
-    }
+    fn is_topic_drift(&self, _text: &str, previous_messages: &[SessionMessage]) -> bool {
+         if previous_messages.is_empty() {
+             return false;
+         }
+ 
+         // Check if the current intent is significantly different from previous intents
+         // (Implementation of Option B: Keyword/Intent Continuity)
+         let last_intents: Vec<Option<MatchedIntent>> = previous_messages.iter().rev().take(3).map(|msg| msg.matched_intent.clone()).collect();
+         
+         // This is simplified; in a real mechatronic safety context, we would have 
+         // a risk-matrix for intent transitions.
+         if let Some(current_intent) = previous_messages.last().and_then(|m| m.matched_intent.as_ref()) {
+             for prev_intent in last_intents.iter().flatten() {
+                 if current_intent != prev_intent {
+                     // Abrupt change in matched intent might indicate topic drift
+                     return true;
+                 }
+             }
+         }
+         
+         false
+     }
 
     fn is_policy_testing(&self, text: &str, previous_messages: &[SessionMessage]) -> bool {
         if previous_messages.is_empty() {
             return false;
         }
 
-        // Check for variations of similar prompts
-        let _current_words: Vec<&str> = text.split_whitespace().collect();
-        
-        for msg in previous_messages.iter().take(3) {
-            // Simple similarity check based on hash patterns
-            // In production, this would use proper text similarity
-            if msg.input_hash.len() > 10 && text.len() > 10 {
-                // Heuristic: similar length but different content
-                let length_diff = (text.len() as i32 - msg.input_hash.len() as i32).abs();
-                if length_diff < 20 && text != msg.input_hash {
-                    return true;
-                }
+        // Check for high similarity with previous messages (Option A: Jaccard)
+        for msg in previous_messages.iter().rev().take(3) {
+            let similarity = self.jaccard_similarity(text, &msg.input_text);
+            if similarity > 0.8 && similarity < 1.0 {
+                // High similarity but not identical - user is likely probing/tweaking
+                return true;
             }
         }
 
@@ -295,47 +344,53 @@ impl SessionManager {
     }
 
     fn is_repetition_with_variation(&self, text: &str, previous_messages: &[SessionMessage]) -> bool {
-        if previous_messages.len() < 2 {
+        if previous_messages.is_empty() {
             return false;
         }
 
-        // Check if current message is similar to previous ones with small changes
-        let current_words: std::collections::HashSet<&str> = text.split_whitespace().collect();
-        
-        for msg in previous_messages.iter().take(3).skip(1) {
-            // Simple overlap check
-            let prev_hash_words: std::collections::HashSet<&str> = msg.input_hash.split_whitespace().collect();
-            let overlap = current_words.intersection(&prev_hash_words).count();
-            
-            if overlap > current_words.len() / 2 && overlap < current_words.len() {
-                return true; // Significant overlap but not identical
+        // Check for medium similarity (variation on a theme)
+        for msg in previous_messages.iter().rev().take(3) {
+            let similarity = self.jaccard_similarity(text, &msg.input_text);
+            if similarity > 0.5 && similarity <= 0.8 {
+                return true;
             }
         }
 
         false
     }
 
-    fn is_payload_fragmentation(&self, text: &str, previous_messages: &[SessionMessage]) -> bool {
-        if previous_messages.is_empty() {
+    fn is_payload_fragmentation(&self, text: &str, _previous_messages: &[SessionMessage]) -> bool {
+        // Payload fragmentation often involves sending parts of a restricted keyword 
+        // or code snippet across multiple messages.
+        
+        // 1. Check for incomplete sentences/fragments
+        let text_trimmed = text.trim();
+        if text_trimmed.is_empty() {
             return false;
         }
 
-        // Check for incomplete sentences or fragments that might be combined
-        let ends_with_punctuation = text.trim_end().ends_with('.') || 
-                                  text.trim_end().ends_with('!') || 
-                                  text.trim_end().ends_with('?');
+        let ends_with_punctuation = text_trimmed.ends_with('.') || 
+                                  text_trimmed.ends_with('!') || 
+                                  text_trimmed.ends_with('?');
 
-        if !ends_with_punctuation && text.len() < 100 {
-            // Short, incomplete sentence might be a fragment
+        if !ends_with_punctuation && text_trimmed.len() < 50 {
+            // Short, non-terminated string is suspicious in a safety context
             return true;
         }
 
-        // Check for continuation patterns
-        let continuation_indicators = ["and then", "after that", "next", "finally"];
+        // 2. Check for continuation indicators
+        let continuation_indicators = ["and then", "after that", "next", "finally", "specifically"];
         for indicator in &continuation_indicators {
             if text.to_lowercase().contains(indicator) {
                 return true;
             }
+        }
+
+        // 3. Check for suspected code/command fragments (e.g., unmatched braces)
+        let open_braces = text.chars().filter(|&c| c == '{').count();
+        let close_braces = text.chars().filter(|&c| c == '}').count();
+        if open_braces != close_braces {
+            return true;
         }
 
         false
@@ -347,16 +402,17 @@ impl SessionManager {
         }
 
         // Check if escalation score increased rapidly in last 3 messages
-        let recent_messages: Vec<_> = session.messages.iter().rev().take(3).collect();
-        let recent_indicators: usize = recent_messages
+        let recent_indicators: usize = session.messages
             .iter()
+            .rev()
+            .take(3)
             .map(|msg| msg.escalation_indicators.len())
             .sum::<usize>();
 
         recent_indicators >= 3 // 3+ indicators in last 3 messages
     }
 
-    fn generate_recommendations(&self, flags: &[SessionFlag], risk_level: SessionRiskLevel) -> Vec<String> {
+    fn generate_recommendations(&self, risk_level: &SessionRiskLevel, flags: &[SessionFlag]) -> Vec<String> {
         let mut recommendations = Vec::new();
 
         match risk_level {
@@ -404,9 +460,8 @@ impl Default for SessionManager {
 #[derive(Debug, Clone)]
 pub struct SessionAnalysis {
     pub session_id: String,
-    pub message_sequence: u64,
-    pub escalation_score: u8,
     pub risk_level: SessionRiskLevel,
+    pub escalation_score: u8,
     pub flags: Vec<SessionFlag>,
     pub message_count: usize,
     pub session_duration_ns: u128,
@@ -462,11 +517,21 @@ pub fn evaluate_with_session(
     
     // Then, analyze with session context
     if let Some(session_manager) = get_session_manager() {
+        // Extract matched intent from either channel (Pillar 1: Deterministic Safety)
+        let matched_intent = match &base_verdict.channel_a.decision {
+            ChannelDecision::Pass { intent } => Some(intent.clone()),
+            _ => match &base_verdict.channel_b.decision {
+                ChannelDecision::Pass { intent } => Some(intent.clone()),
+                _ => None,
+            },
+        };
+
         let session_analysis = session_manager.add_message(
             session_id,
             input,
             base_verdict.kind.clone(),
             base_verdict.audit.block_reason.clone(),
+            matched_intent,
         );
 
         // For now, session analysis is advisory only

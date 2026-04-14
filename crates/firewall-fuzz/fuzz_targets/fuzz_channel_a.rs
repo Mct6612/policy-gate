@@ -9,7 +9,8 @@ fuzz_target!(|data: &[u8]| {
 
     // Channel A operates on the normalised string directly.
     // Feed arbitrary UTF-8 — the FSM must handle anything without panicking.
-    let result = firewall_core::fsm::ChannelA::evaluate(s);
+    let Ok(input) = firewall_core::PromptInput::new(s) else { return };
+    let result = firewall_core::fsm::ChannelA::evaluate(&input, None);
 
     // Invariant: elapsed_us must be within watchdog budget (with margin).
     // WATCHDOG_DEADLINE_US is 500_000 µs in debug builds.

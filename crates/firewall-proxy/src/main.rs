@@ -19,38 +19,62 @@
 //!
 //! # Streaming
 //!
-//! Requests with `"stream": true` are rejected with HTTP 400. Streaming output
-//! prevents the egress safety check from running on the complete response before
-//! it reaches the client, violating the fail-closed egress guarantee.
+//! By default, requests with `"stream": true` are rejected with HTTP 400.
+//! Streaming output prevents the egress safety check from running on the
+//! complete response before delivery to the client, violating the fail-closed
+//! egress guarantee.
+//!
+//! When compiled with `--features streaming-egress`, the proxy accepts streaming
+//! requests and applies an Aho-Corasick overlap-buffer scan (256-byte tail) on
+//! each SSE chunk. On pattern match, the connection is aborted mid-stream with
+//! an SSE error event. See `streaming.rs` for the implementation.
+
+// SA-NEW: Pillar 6 — Streaming Egress Handler (only when feature is active)
+#[cfg(feature = "streaming-egress")]
+mod streaming;
 
 use axum::{
     extract::{DefaultBodyLimit, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use metrics::{counter, histogram};
+use metrics::counter;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+
 use tokio::net::TcpListener;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 
 use firewall_core::{
-    evaluate_for_tenant, evaluate_output_for_tenant, next_sequence, try_reload_config, PromptInput,
+    try_reload_config,
 };
 
 // ─── Shared state ─────────────────────────────────────────────────────────────
 
-struct AppState {
-    http_client: Client,
-    upstream_url: String,
+pub(crate) struct AppState {
+    pub(crate) http_client: reqwest::Client,
+    pub(crate) upstream_url: String,
+    pub(crate) api_key: String,
     metrics_handle: PrometheusHandle,
+}
+
+/// Minimal typed request model to avoid untyped Value indexing.
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub(crate) struct ChatCompletionRequest {
+    pub(crate) messages: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) tenant_id: Option<String>,
+    /// Everything else forwarded verbatim.
+    #[serde(flatten)]
+    pub(crate) extra: serde_json::Map<String, serde_json::Value>,
 }
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
@@ -98,14 +122,23 @@ async fn main() {
         }
     });
 
+    let api_key = std::env::var("UPSTREAM_API_KEY").unwrap_or_default();
+
     let state = Arc::new(AppState {
         http_client: Client::new(),
         upstream_url,
+        api_key,
         metrics_handle,
     });
 
+    // Route: streaming handler when feature is enabled, hard-reject otherwise.
+    #[cfg(feature = "streaming-egress")]
+    let chat_route = post(streaming::handle_streaming_chat_completion);
+    #[cfg(not(feature = "streaming-egress"))]
+    let chat_route = post(handle_chat_completion);
+
     let app = Router::new()
-        .route("/v1/chat/completions", post(handle_chat_completion))
+        .route("/v1/chat/completions", chat_route)
         .route("/health", get(|| async { "OK" }))
         .route("/metrics", get(metrics_handler))
         .route("/reload", post(reload_handler))
@@ -121,6 +154,7 @@ async fn main() {
 
 // ─── Request handler ──────────────────────────────────────────────────────────
 
+#[cfg(not(feature = "streaming-egress"))]
 async fn handle_chat_completion(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -275,6 +309,7 @@ async fn handle_chat_completion(
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Concatenate all message `content` fields from an OpenAI-style payload.
+#[cfg(not(feature = "streaming-egress"))]
 fn extract_message_content(payload: &Value) -> String {
     let mut out = String::new();
     if let Some(msgs) = payload.get("messages").and_then(|m| m.as_array()) {
@@ -289,6 +324,7 @@ fn extract_message_content(payload: &Value) -> String {
 }
 
 /// Extract the first choice's message content from an OpenAI-style response.
+#[cfg(not(feature = "streaming-egress"))]
 fn extract_response_content(resp: &Value) -> Option<String> {
     resp.get("choices")?
         .as_array()?
@@ -300,12 +336,14 @@ fn extract_response_content(resp: &Value) -> Option<String> {
 }
 
 /// Record request latency as a Prometheus histogram (milliseconds).
+#[cfg(not(feature = "streaming-egress"))]
 fn record_latency_ms(outcome: &'static str, start: &Instant) {
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
     histogram!("policy_gate_request_duration_ms", "outcome" => outcome).record(elapsed);
 }
 
 /// Build a unified 403 Forbidden response for blocked requests.
+#[cfg(not(feature = "streaming-egress"))]
 fn blocked_response(error_type: &str, details: &str) -> Response {
     (
         StatusCode::FORBIDDEN,

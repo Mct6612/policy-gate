@@ -772,7 +772,7 @@ fn channel_b_re011_passes_why_question() {
 
 #[test]
 fn channel_b_re011_passes_how_does_question() {
-    let v = eval("How does a CPU work?");
+    let v = eval("How does a CPU work?"); println!("DEBUG: causal: {:?}", v.channel_b.decision);
     assert!(matches!(
         v.channel_b.decision,
         ChannelDecision::Pass {

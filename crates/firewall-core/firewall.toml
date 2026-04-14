@@ -1,6 +1,7 @@
-forbidden_keywords = ["blocked", "ultra-forbidden-keyword"]
+# firewall.toml — Local configuration for policy-gate
+allow_anonymous_tenants = true
 
-[[intents]]
-id = "IP-201"
-intent = "QuestionFactual"
-regex = "(?i)secret password"
+[[rule_exceptions]]
+rule_id = "RE-004"
+regex = "(?!.*print\\(sys\\.argv\\))"
+reason = "Operator-Review: Rule Exception for Cluster"

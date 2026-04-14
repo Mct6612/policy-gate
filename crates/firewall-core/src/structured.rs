@@ -487,7 +487,7 @@ mod tests {
         let input = make_input(r#"{"name": "Alice", "age": 30}"#);
         let metadata = detect_structured_input(&input);
         assert!(metadata.is_some());
-        let m = metadata.unwrap();
+        let m = metadata.expect("metadata should be present in test");
         assert_eq!(m.format, StructuredFormat::Json);
         assert_eq!(m.field_count, 2);
     }
@@ -500,7 +500,7 @@ mod tests {
         let input = make_input(r#"{"api_key": "${API_KEY}", "secret": "${SECRET}"}"#);
         let metadata = detect_structured_input(&input);
         assert!(metadata.is_some());
-        let m = metadata.unwrap();
+        let m = metadata.expect("metadata should be present in test");
         assert!(!m.sensitive_field_names.is_empty(), "api_key and secret should be detected");
         assert!(m.has_variable_refs, "s{{...}} patterns should be detected as variable refs");
         assert_eq!(m.variable_patterns.len(), 2);
@@ -511,7 +511,7 @@ mod tests {
         let input = make_input("Hello {{ name }}, your token is {{ token }}");
         let metadata = detect_structured_input(&input);
         assert!(metadata.is_some());
-        let m = metadata.unwrap();
+        let m = metadata.expect("metadata should be present in test");
         assert_eq!(m.format, StructuredFormat::Template);
         assert!(m.has_variable_refs);
         assert_eq!(m.variable_patterns.len(), 2);
@@ -524,7 +524,7 @@ mod tests {
         let input = make_input("API endpoint: ${API_URL}, key: ${API_KEY}");
         let metadata = detect_structured_input(&input);
         assert!(metadata.is_some(), "normalised s{{...}} should be detected as template");
-        let m = metadata.unwrap();
+        let m = metadata.expect("metadata should be present in test");
         assert_eq!(m.format, StructuredFormat::Template);
         assert!(m.has_variable_refs);
     }
@@ -536,7 +536,7 @@ mod tests {
         let input = make_input("name: Alice\nage: 30\nemail: alice@example.com");
         let metadata = detect_structured_input(&input);
         assert!(metadata.is_some());
-        let m = metadata.unwrap();
+        let m = metadata.expect("metadata should be present in test");
         assert_eq!(m.format, StructuredFormat::Yaml);
         assert_eq!(m.field_count, 3);
     }
@@ -546,7 +546,7 @@ mod tests {
         let input = make_input("username: alice\napi_key: secret123\npassword: pass456");
         let metadata = detect_structured_input(&input);
         assert!(metadata.is_some());
-        let m = metadata.unwrap();
+        let m = metadata.expect("metadata should be present in test");
         assert!(!m.sensitive_field_names.is_empty());
     }
 
@@ -562,7 +562,7 @@ mod tests {
         let input = make_input(r#"{"user": {"name": "Alice", "profile": {"age": 30}}}"#);
         let metadata = detect_structured_input(&input);
         assert!(metadata.is_some());
-        let m = metadata.unwrap();
+        let m = metadata.expect("metadata should be present in test");
         assert!(m.max_nesting_depth > 1);
     }
 
@@ -571,7 +571,7 @@ mod tests {
         let input = make_input(r#"{"username": "alice", "api_key": "secret", "password": "pass"}"#);
         let metadata = detect_structured_input(&input);
         assert!(metadata.is_some());
-        let m = metadata.unwrap();
+        let m = metadata.expect("metadata should be present in test");
         assert!(m.sensitive_field_names.contains(&"api_key".to_string()));
         assert!(m.sensitive_field_names.contains(&"password".to_string()));
     }

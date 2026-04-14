@@ -67,6 +67,9 @@ fn conformance_corpus_matches_core() {
             })
             .collect();
         let verdict = evaluate_messages(&messages, 10_000 + index as u64);
+        if verdict.is_pass != case.expected_is_pass {
+            println!("DEBUG: {} results: {:?}", case.name, verdict.verdicts);
+        }
         assert_eq!(
             verdict.is_pass,
             case.expected_is_pass,

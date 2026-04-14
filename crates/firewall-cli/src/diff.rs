@@ -74,5 +74,85 @@ pub fn display_diff(old: &FirewallConfig, new: &FirewallConfig) {
         println!("\n{}: {:?} -> {:?}", "Context Window".yellow(), old.context_window, new.context_window);
     }
 
+    // 4. Compare Rule Exceptions (Pillar 5)
+    println!("\n{}", "Rule Exceptions:".underline());
+    let old_exceptions: HashMap<String, &firewall_core::config::RuleExceptionEntry> = old.rule_exceptions.as_ref()
+        .map(|v| v.iter().map(|e| (format!("{}:{}", e.rule_id, e.regex), e)).collect())
+        .unwrap_or_default();
+
+    let new_exceptions: HashMap<String, &firewall_core::config::RuleExceptionEntry> = new.rule_exceptions.as_ref()
+        .map(|v| v.iter().map(|e| (format!("{}:{}", e.rule_id, e.regex), e)).collect())
+        .unwrap_or_default();
+
+    let all_exc_ids: HashSet<String> = old_exceptions.keys().cloned().chain(new_exceptions.keys().cloned()).collect();
+    let mut exc_ids_sorted: Vec<_> = all_exc_ids.into_iter().collect();
+    exc_ids_sorted.sort();
+
+    let mut exc_changed = 0;
+    for id in exc_ids_sorted {
+        match (old_exceptions.get(&id), new_exceptions.get(&id)) {
+            (None, Some(n)) => {
+                println!("{} [{}] {} -> {}", "+".green(), n.rule_id.green(), n.regex, n.reason);
+                exc_changed += 1;
+            }
+            (Some(o), None) => {
+                println!("{} [{}] {} -> {}", "-".red(), o.rule_id.red(), o.regex, o.reason);
+                exc_changed += 1;
+            }
+            _ => {}
+        }
+    }
+    if exc_changed == 0 {
+        println!("  (No changes to rule exceptions)");
+    }
+
+    // 5. Compare Tenant & Policy Settings (Pillar 5)
+    println!("\n{}", "Policy Settings:".underline());
+    let mut policy_changed = false;
+
+    if old.allow_anonymous_tenants != new.allow_anonymous_tenants {
+        println!("  {}: {:?} -> {:?}", "Allow Anonymous Tenants".yellow(),
+            old.allow_anonymous_tenants, new.allow_anonymous_tenants);
+        policy_changed = true;
+    }
+
+    if old.shadow_mode != new.shadow_mode {
+        println!("  {}: {:?} -> {:?}", "Shadow Mode".yellow(),
+            old.shadow_mode, new.shadow_mode);
+        policy_changed = true;
+    }
+
+    if old.audit_detail_level != new.audit_detail_level {
+        println!("  {}: {:?} -> {:?}", "Audit Detail Level".yellow(),
+            old.audit_detail_level, new.audit_detail_level);
+        policy_changed = true;
+    }
+
+    if old.semantic_threshold != new.semantic_threshold {
+        println!("  {}: {:?} -> {:?}", "Semantic Threshold".yellow(),
+            old.semantic_threshold, new.semantic_threshold);
+        policy_changed = true;
+    }
+
+    if old.semantic_enforce_threshold != new.semantic_enforce_threshold {
+        println!("  {}: {:?} -> {:?}", "Semantic Enforce Threshold".yellow(),
+            old.semantic_enforce_threshold, new.semantic_enforce_threshold);
+        policy_changed = true;
+    }
+
+    if let (Some(old_tid), Some(new_tid)) = (&old.tenant_id, &new.tenant_id) {
+        if old_tid != new_tid {
+            println!("  {}: {} -> {}", "Tenant ID".yellow(), old_tid, new_tid);
+            policy_changed = true;
+        }
+    } else if old.tenant_id != new.tenant_id {
+        println!("  {}: {:?} -> {:?}", "Tenant ID".yellow(), old.tenant_id, new.tenant_id);
+        policy_changed = true;
+    }
+
+    if !policy_changed {
+        println!("  (No changes to policy settings)");
+    }
+
     println!("\n{}", "--- End Diff ---".bold());
 }

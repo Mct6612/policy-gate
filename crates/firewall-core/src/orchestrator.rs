@@ -1,5 +1,6 @@
 use crate::advisory;
 use crate::config;
+use crate::config::OnDiagnosticAgreement;
 use crate::fsm::ChannelA;
 use crate::init::get_config_for_tenant;
 use crate::rule_engine::ChannelB;
@@ -73,7 +74,12 @@ fn unknown_tenant_block(input: &PromptInput, sequence: u64, now: u128, tenant_id
         block.clone(),
         block,
         #[cfg(feature = "semantic")]
-        None,
+        crate::types::ChannelResult {
+            channel: crate::types::ChannelId::D,
+            decision: crate::types::ChannelDecision::Pass { intent: crate::types::MatchedIntent::QuestionFactual },
+            elapsed_us: 0,
+            similarity: None,
+        },
         #[cfg(feature = "semantic")]
         None,
         #[cfg(not(feature = "semantic"))]
@@ -97,8 +103,8 @@ pub(crate) fn evaluate(
         return unknown_tenant_block(&input, sequence, start_ns, tenant_id.map(|s| s.to_string()));
     }
 
-    // If no specific tenant provided, only allow access if anonymous is enabled in the default policy.
-    if tenant_id.is_none() && !config.as_ref().and_then(|c| c.allow_anonymous_tenants).unwrap_or(false) {
+    // If no specific tenant provided, only allow access if anonymous is enabled (or not explicitly disabled) in the default policy.
+    if tenant_id.is_none() && config.as_ref().and_then(|c| c.allow_anonymous_tenants) == Some(false) {
         return unknown_tenant_block(&input, sequence, start_ns, None);
     }
 
@@ -106,12 +112,16 @@ pub(crate) fn evaluate(
     let mut channel_b = ChannelB::evaluate(&input, config.as_ref());
 
     #[cfg(feature = "semantic")]
-    let (s_tag, s_enf) = config.as_ref()
-        .map(|c| (c.semantic_threshold.unwrap_or(0.70), c.semantic_enforce_threshold.unwrap_or(1.0)))
-        .unwrap_or((0.70, 1.0));
+    let (s_tag, s_enf, s_mode) = config.as_ref()
+        .map(|c| (
+            c.semantic_threshold.unwrap_or(0.70), 
+            c.semantic_enforce_threshold.unwrap_or(1.0),
+            c.engine_mode.as_deref().unwrap_or("fast")
+        ))
+        .unwrap_or((0.70, 1.0, "fast"));
 
     #[cfg(feature = "semantic")]
-    let channel_d = crate::semantic::ChannelD::evaluate(&input.text, s_tag, s_enf);
+    let channel_d = crate::semantic::ChannelD::evaluate(&input.text, s_tag, s_enf, s_mode);
     #[cfg(feature = "semantic")]
     let semantic_similarity = channel_d.similarity;
     #[cfg(not(feature = "semantic"))]
@@ -119,9 +129,25 @@ pub(crate) fn evaluate(
 
     let mut verdict_kind = Voter::decide(&channel_a, &channel_b);
 
+    // SA-NEW: Per-tenant DiagnosticAgreement escalation.
+    // If the tenant has configured `on_diagnostic_agreement = "fail_closed"`,
+    // we immediately escalate the intent-mismatch Pass to a hard Block.
+    // This is the correct hardening posture for high-sensitivity tenants
+    // (e.g. financial data, PII) where any ambiguity must fail closed.
+    if verdict_kind == VerdictKind::DiagnosticAgreement {
+        let policy = config.as_ref()
+            .map(|c| c.on_diagnostic_agreement)
+            .unwrap_or(OnDiagnosticAgreement::PassAndLog);
+        if policy == OnDiagnosticAgreement::FailClosed {
+            verdict_kind = VerdictKind::Block;
+        }
+    }
+
     #[cfg(feature = "semantic")]
-    if matches!(channel_d.decision, ChannelDecision::Block { .. }) {
-        verdict_kind = VerdictKind::Block;
+    {
+        if let ChannelDecision::Block { .. } = &channel_d.decision {
+            verdict_kind = VerdictKind::Block;
+        }
     }
     apply_profile_filter(&mut verdict_kind, &mut channel_a, &mut channel_b, config.as_ref());
 

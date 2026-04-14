@@ -3,7 +3,7 @@
 ## Safety-Oriented Architecture Documentation
 
 **Document ID:** PF-SM-001
-**Revision:** 2.20
+**Revision:** 2.25
 **Status:** Under development — not certified — not for production use
 **Design target:** Deterministic, fail-closed prompt gate for narrow LLM workflows
 
@@ -21,6 +21,9 @@ Recent revisions:
 
 | Rev  | Date    | Current relevance |
 | ---- | ------- | ----------------- |
+| 2.25 | 2026-04 | Pillar 6 Streaming Egress (SA-079): Added experimental `streaming-egress` feature. Introduces Aho-Corasick overlap-buffer scanning across SSE chunks. Added H-19 (Streaming egress payload fragment), SR-024 (Aho-Corasick 256-byte overlap), and OC-13 (Pattern anchor length validation). |
+| 2.24 | 2026-04 | Per-Tenant Voter Hardening (SA-NEW): New `on_diagnostic_agreement` configuration field. High-sensitivity tenants (finance, PII, healthcare) can set `fail_closed` to escalate `DiagnosticAgreement` to a hard `Block`. Default `pass_and_log` preserves existing behaviour for all tenants. New hazard H-18, safety requirement SR-023, operational constraint OC-12. |
+| 2.23 | 2026-04 | Deterministic Session-Aware Monitor (SA-076): Transition from hash-based to word-level similarity (Jaccard) for `PolicyTesting` detection. Intent-Tracking: Multi-turn analysis now monitors intent transitions (`TopicDrift`) across messages. Structural Fragility: Added detection for unmatched braces and incomplete framing as indicators of `PayloadFragmentation`. |
 | 2.22 | 2026-04 | Multi-Tenant Policy Hub: Integration of `TENANT_REGISTRY` for isolated policy enforcement. Audit Schema v3: Added `tenant_id` to audit logs for per-tenant forensics. Directory-based loading: Added support for zero-code configuration registries. Fail-closed: Mandated `UnknownTenant` block for missing/unauthorized tenant IDs. |
 | 2.21 | 2026-04 | High-Performance Scaling: Migration to `RegexSet` ($O(1)$ matching) and LRU Caching. Staged Hot-Reload with pre-flight validation. Semantic Hardening: Fast-Semantic 2.0 (128-dim sparse embedding) with advisory/enforcement thresholds. |
 | 2.20 | 2026-03 | Code-structure alignment: init state and startup logic moved to `crates/firewall-core/src/init.rs`; public API remains in `lib.rs`. |
@@ -75,6 +78,8 @@ disagreeing, or faulted cases are treated as `Block`.
 | H-15 | NFKC-Expansion DoS via expansive codepoints             | Attacker sends payload of expansive Unicode codepoints (e.g. U+FDFB, 3 raw bytes → 18 post-NFKC chars) near the 8 192-byte raw limit, forcing the pipeline to perform full NFKC expansion before the post-NFKC size check fires | SR-017: Pre-NFKC raw byte limit hard-rejects inputs > 8 192 raw bytes before any normalisation work (SA-044)     |
 | H-16 | Cross-tenant evaluation leakage                         | Tenant A evaluates request using cached pattern outcome or policy from Tenant B                                                                                                                                                 | SR-020: Cache partitioning and policy isolation by tenant_id (SA-048)                                            |
 | H-17 | Unauthorized anonymous access                           | API caller omits tenant_id when anonymous access is disabled                                                                                                                                                                    | SR-021: Fail-closed fallback to UnknownTenant block (SA-048)                                                     |
+| H-18 | DiagnosticAgreement passes through on high-sensitivity tenant | Both channels agree input is safe but disagree on intent class; for finance/PII tenants, any intent ambiguity is unacceptable and must not reach the model | SR-023: Per-tenant `on_diagnostic_agreement = fail_closed` escalates DiagnosticAgreement to Block in orchestrator |
+| H-19 | Streaming egress evaluation misses blocked payload chunk | Egress pattern is split across SSE chunk boundary | SR-024: Mandatory overlap buffer (256 bytes) across chunks using Aho-Corasick (SA-079) |
 
 ---
 
@@ -103,15 +108,17 @@ prompt + response ──► [Normalise Response] ──► [Channel E: FSM/PII] 
 
 ### 3.2 1oo2D Voter (HFT = 1)
 
-| Channel A | Channel B | Verdict                | is_pass()                          |
-| --------- | --------- | ---------------------- | ---------------------------------- |
-| Pass(X)   | Pass(X)   | Pass                   | true                               |
-| Pass(X)   | Pass(Y≠X) | DiagnosticAgreement    | true — review within 72h (SR-008)  |
-| Pass      | Block     | DiagnosticDisagreement | false — review within 24h (SR-007) |
-| Block     | Pass      | DiagnosticDisagreement | false — review within 24h (SR-007) |
-| Block     | Block     | Block                  | false                              |
-| Fault     | \*        | Block                  | false — fail-closed (HFT=1)        |
-| \*        | Fault     | Block                  | false — fail-closed (HFT=1)        |
+| Channel A | Channel B | Voter Output (default)              | is_pass() | Voter Output (`fail_closed` tenant)  |
+| --------- | --------- | ----------------------------------- | --------- | ------------------------------------ |
+| Pass(X)   | Pass(X)   | Pass                                | true      | Pass (unchanged)                     |
+| Pass(X)   | Pass(Y≠X) | DiagnosticAgreement — review 72h    | true      | **Block** (SR-023 escalation)        |
+| Pass      | Block     | DiagnosticDisagreement → Block      | false     | Block (unchanged)                    |
+| Block     | Pass      | DiagnosticDisagreement → Block      | false     | Block (unchanged)                    |
+| Block     | Block     | Block                               | false     | Block (unchanged)                    |
+| Fault     | \*        | Block — fail-closed (HFT=1)         | false     | Block (unchanged)                    |
+| \*        | Fault     | Block — fail-closed (HFT=1)         | false     | Block (unchanged)                    |
+
+> **Note (SR-023):** The `DiagnosticAgreement → Block` escalation for `fail_closed` tenants is applied in `orchestrator.rs` immediately after `Voter::decide`, before the profile filter and shadow-mode checks. The underlying `VerdictKind` is rewritten to `Block`; the voter itself remains stateless and config-independent.
 
 ### 3.3 Channel A — FSM
 
@@ -227,6 +234,50 @@ The system maintains a global `TENANT_REGISTRY` of isolation units. Each unit is
 2. **Resolve**: Lookup configuration in the registry.
 3. **Guard**: If resolution fails, synthesize `VerdictKind::Block` with `BlockReason::UnknownTenant`.
 4. **Isolate**: Execute evaluation using ONLY the resolved tenant's configuration and a tenant-specific cache key.
+
+### 3.12 Session-Aware Monitor (SA-076)
+
+The session layer provides cross-turn diagnostics to detect attacks that are invisible to stateless evaluation. It acts as an **advisory monitor** (similar to Channel C) but can be configured to trigger fail-closed behavior on high-risk sessions.
+
+#### 3.12.1 Escalation Indicators
+
+| Indicator | Detection Method | Description |
+|-----------|------------------|-------------|
+| **PolicyTesting** | Jaccard Similarity > 0.8 | Detecting "probing" where an attacker sends near-identical prompts with slight variations to find allowlist boundaries. |
+| **TopicDrift** | Intent-Tracking Transition | Monitoring transitions between mismatched intents. Abrupt shifts in classified intent are flagged for review. |
+| **PayloadFragmentation** | Structural Fragility | Detecting unmatched braces `{` or `[` and incomplete sentences as markers of split-payload attacks. |
+| **ComplexityEscalation** | Word-Count Gradient | Identifying sessions that start with simple, safe queries and rapidly increase in technical complexity. |
+
+#### 3.12.2 Deterministic Safety Pillar
+
+ Unlike traditional "contextual" AI safety layers, the session monitor uses **deterministic metrics**:
+- Word-level Jaccard similarity (no embeddings in the default monitor path).
+- State-transition monitoring for matched intents.
+- Structural analysis for fragmented code/JSON blocks.
+
+#### 3.12.3 Hybrid Semantic Engine (SA-050)
+
+Channel D (Semantic Firewall) supports two operational modes configurable via `firewall.toml`:
+
+| Mode | Technology | Latency | Rationale |
+|------|------------|---------|-----------|
+| **Fast** (Default) | Sparse Vocabulary Centroids | < 1ms | Deterministic, zero-dependency, ultra-fast. |
+| **BERT** | ML-based Transformer (Inference) | 5-20ms | Deep semantic understanding, detects complex paraphrasing. |
+
+The system defaults to **Fast** mode to maintain sub-millisecond performance. **BERT** mode can be enabled for high-security environments where the additional latency is acceptable.
+
+### 3.13 Stream Scanner (Pillar 6, SA-079)
+
+Provides Aho-Corasick based deterministic egress scanning across SSE streaming borders for PII and secret leakage detection.
+
+**Architectural Design:**
+- **Pre-compiled Automaton**: Uses the Aho-Corasick algorithm for $O(n)$ multi-pattern matching. The searcher is compiled once at startup (`init_global_scanner`) and shared across all connections via `Arc`.
+- **Overlap Buffer (`STREAM_EGRESS_OVERLAP_BYTES = 256`)**: To detect patterns split across network chunks (e.g., `sk-` in chunk N and `key` in chunk N+1), the scanner maintains a stateful tail-buffer of the previous 256 bytes.
+- **Fail-Closed Teardown**: Upon the first match detected by `StreamScanner::feed()`, the system:
+    1. Sends an explicit SSE error event `{ "event": "error", "data": "Blocked by policy-gate" }`.
+    2. Flushes the event.
+    3. Triggers a hard TCP reset (`RST_STREAM` / `ConnectionAborted`) to terminate the session immediately.
+- **Configuration**: Managed via `streaming_egress_enabled` (toggle) and `streaming_egress_final_check` (optional full-buffer scan at stream completion).
 
 #### [NEW] 3.11.3 Audit Schema V3
 To support multi-tenant forensics and meet SR-013, Audit Schema V3 introduces the mandatory `tenant_id` field. All `AuditEntry` records emitted by the voter include the `tenant_id` used for evaluation, ensuring full isolation during incident response and compliance reporting.
@@ -785,6 +836,8 @@ Session layer significantly improves multi-turn attack detection but remains adv
 | SR-020             | H-16   | Cache partitioning and policy isolation by tenant_id (SA-048)    | `registry.rs`, `lib.rs::evaluate_for_tenant`               | —                    | `multi_tenant_*` tests                            |
 | SR-021             | H-17   | Fail-closed fallback to UnknownTenant block (SA-048)             | `lib.rs::evaluate_for_tenant`                              | —                    | `evaluate_rejects_missing_tenant`                 |
 | SR-022             | H-14   | Build-Time Init Token / Race-to-Init prevent (SA-073)            | `init.rs::init_with_token`                                 | —                    | `init_requires_token`                             |
+| SR-023             | H-18   | Per-tenant `on_diagnostic_agreement = fail_closed` escalates DA to Block | `config.rs::OnDiagnosticAgreement`, `orchestrator.rs` | PO-V10               | `on_diagnostic_agreement_fail_closed_blocks`      |
+| SR-024             | H-19   | Mandatory overlap buffer (256 bytes) across chunks using Aho-Corasick | `stream_scanner.rs`                                        | —                    | `stream_scanner_detects_split_pattern`            |
 
 
 ## 7.9 Operation Modes (Shadow Mode)
@@ -807,6 +860,8 @@ The firewall can be configured to run in "Shadow Mode" (`shadow_mode = true` in 
 | OC-01 | `init()` must succeed before any `evaluate()` call. If `Err`, the process must not evaluate prompts.                                                         | **Enforced in `firewall-napi` (SA-021):** `INIT_RESULT: OnceLock` caches the init outcome; `firewall_evaluate()` returns `Err` (rejected Promise) if init failed or was never called. In direct `firewall-core` use, the init state lives in `init.rs` and `evaluate()` / `evaluate_raw()` fail closed if initialization never succeeded. | SR-006, SR-015 |
 | OC-02 | `evaluate_raw()` is the recommended entry point. If `evaluate()` is called directly, the caller owns normalisation and size-checking via `PromptInput::new`. | Convention; enforced by API design (`evaluate()` requires a `PromptInput`, not a raw `&str`).                                                                                                                                                                             | SA-010, SA-014 |
 | OC-03 | Every `AuditEntry` must be persisted by the caller before the verdict is acted upon.                                                                         | Caller contract — not enforceable in `firewall-core`. Deployment checklist item.                                                                                                                                                                                          | SR-004         |
+| OC-12 | Tenants handling financial data, PII, or healthcare records MUST set `on_diagnostic_agreement = "fail_closed"` in their `.toml` profile.                     | Configuration contract — validated at load time via `FirewallConfig::validate()`. Deployment checklist item; operators must confirm setting is active before go-live.                                                                                                     | SR-023, H-18   |
+| OC-13 | Streaming egress patterns must not exceed 127 bytes in length to be safely detectable within the 256-byte overlap buffer.                                | Enforced at configuration load/validation layer. `FirewallConfig::validate()` will reject the entire rule table if `streaming_egress_enabled = true` and a rule anchor is too large.                                                                                      | SR-024, H-19   |
 
 ### 8.1.1 DiagnosticAgreement as a System Health Metric
 
@@ -816,6 +871,8 @@ The voter's DiagnosticAgreement and DiagnosticDisagreement events provide contin
 | ---------------------- | ---------------- | ---------------------------------------------------------------------- |
 | DiagnosticAgreement    | > 1% (sustained) | **Warning:** Review intent patterns for overlap or coverage gaps.      |
 | DiagnosticAgreement    | > 5% (peak)      | **Alert:** Potential adversarial probing or major architectural drift. |
+
+**Per-Tenant Escalation (SR-023 / OC-12):** For tenants configured with `on_diagnostic_agreement = "fail_closed"`, `DiagnosticAgreement` events are never counted in the above metric — they are immediately escalated to `Block` by the orchestrator before the audit entry is written. Operators of `fail_closed` tenants should monitor their `policy_gate_blocked_total{reason="ingress_policy"}` Prometheus counter for any increase attributable to the escalation, as this signals intent-pattern overlap that warrants review.
 | DiagnosticDisagreement | > 0.1%           | **Critical:** Common-cause failure or major logic divergence.          |
 
 > [!NOTE]
@@ -1013,6 +1070,9 @@ items would be required for a formal certification effort, which is not planned:
 | SA-068 | **Separator Refinement**. Context-aware stripping logic in `types.rs` to preserve technical terms (API-Key, API.Key.v2.1) while blocking obfuscation (m.a.l.w.a.r.e). Supported separators: `-`, `.`, `_`, `,`, `:`, `!`, `/`, `~`. Only strips when `segment_count > 4 && separator_count > 3` (excessive segmentation detection).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | **Closed**                                                                                                                                                                                                                                                                                                                                                                              |
 | SA-070 | **Red-Team Stress-Testing**: Systematic gap analysis based on 7 attack strategies (Intent Camouflage, Persona Indirection, etc.). Verified via `red_team_tests.rs`. 100% block rate on tested high-value patterns.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Closed                                                                                                                                                                                                                                                                                                                                                                                  |
 | SA-071 | **Contextual Safety Layer**: Sliding window evaluation (N=3) in `evaluate_messages_windowed`. Blocks Strategy 2/3 fragmentation/escalation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Closed                                                                                                                                                                                                                                                                                                                                                                                  |
+---
+
+| SA-079 | **Streaming Egress Protection (Pillar 6)**: Implemented Aho-Corasick stateful scanner with `STREAM_EGRESS_OVERLAP_BYTES = 256`. Enables detection of split patterns across SSE chunks. Mandatory for `streaming_egress_enabled = true`. Fail-closed connection teardown via `RST_STREAM`. | Closed |
 ---
 
 ## 10. Staged Configuration Reload (SA-077)
