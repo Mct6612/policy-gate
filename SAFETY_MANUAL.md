@@ -21,6 +21,7 @@ Recent revisions:
 
 | Rev  | Date    | Current relevance |
 | ---- | ------- | ----------------- |
+| 2.26 | 2026-04 | **SA-080: Contextual Anchor Validation**: Hardened intent-persistence across the ingress-egress boundary. Ingress matched intent now determines the `EgressAnchor` (e.g. `TaskTranslation` -> `TextOnly`). Updated Channel F to block code fragments in text-only contexts. |
 | 2.25 | 2026-04 | Pillar 6 Streaming Egress (SA-079): Added experimental `streaming-egress` feature. Introduces Aho-Corasick overlap-buffer scanning across SSE chunks. Added H-19 (Streaming egress payload fragment), SR-024 (Aho-Corasick 256-byte overlap), and OC-13 (Pattern anchor length validation). |
 | 2.24 | 2026-04 | Per-Tenant Voter Hardening (SA-NEW): New `on_diagnostic_agreement` configuration field. High-sensitivity tenants (finance, PII, healthcare) can set `fail_closed` to escalate `DiagnosticAgreement` to a hard `Block`. Default `pass_and_log` preserves existing behaviour for all tenants. New hazard H-18, safety requirement SR-023, operational constraint OC-12. |
 | 2.23 | 2026-04 | Deterministic Session-Aware Monitor (SA-076): Transition from hash-based to word-level similarity (Jaccard) for `PolicyTesting` detection. Intent-Tracking: Multi-turn analysis now monitors intent transitions (`TopicDrift`) across messages. Structural Fragility: Added detection for unmatched braces and incomplete framing as indicators of `PayloadFragmentation`. |
@@ -80,6 +81,7 @@ disagreeing, or faulted cases are treated as `Block`.
 | H-17 | Unauthorized anonymous access                           | API caller omits tenant_id when anonymous access is disabled                                                                                                                                                                    | SR-021: Fail-closed fallback to UnknownTenant block (SA-048)                                                     |
 | H-18 | DiagnosticAgreement passes through on high-sensitivity tenant | Both channels agree input is safe but disagree on intent class; for finance/PII tenants, any intent ambiguity is unacceptable and must not reach the model | SR-023: Per-tenant `on_diagnostic_agreement = fail_closed` escalates DiagnosticAgreement to Block in orchestrator |
 | H-19 | Streaming egress evaluation misses blocked payload chunk | Egress pattern is split across SSE chunk boundary | SR-024: Mandatory overlap buffer (256 bytes) across chunks using Aho-Corasick (SA-079) |
+| H-20 | Contextual Framing Bypass (Egress)                      | LLM generates code or structured data for a text-only task | SR-025: Contextual Anchor Validation (SA-080) enforces egress constraints based on ingress intent |
 
 ---
 
@@ -99,9 +101,9 @@ prompt + tenant_id ──► [Tenant Resolution] ──► [Normalise NFKC] ─�
 
 **Egress Pipeline (Output):**
 ```text
-prompt + response ──► [Normalise Response] ──► [Channel E: FSM/PII] ─┐
-                            └──► [Channel F: Rule] ──────┼──► [1oo2 Voter] ──► PASS/EgressBlock
-                                                         └────────────────────┘
+prompt + response + [Anchor_Intent] ──► [Normalise Response] ──► [Channel E: FSM/PII] ─┐
+                                              └──► [Channel F: Rule] ──────┼──► [1oo2 Voter] ──► PASS/EgressBlock
+                                                   (SA-080 Anchor Validation) ┘
 ```
 
 *Note: Channel D (Semantic) is an optional, advisory-only feature. Default builds currently compile without it (`firewall-core` uses `default = []`). Enable it explicitly with `--features semantic` when semantic analysis should be compiled in. WASM/Edge builds typically keep it disabled to preserve the zero-dependency, sub-millisecond path.*
@@ -158,8 +160,9 @@ Safety Action SA-050. Fast-Semantic Prototype mit eingebetteten Vektor-Tabellen 
 
 - **Centroid Hash Tripwire:** An `EXPECTED_CENTROID_HASH` constant (`0e59a67a83424697...`) creates a compile-time link between binary and semantic data. Prevents "centroid drift" where the semantic boundary shifts without an audit trail or CI failure.
 - **Subword-Level Defense:** Implements static subword embeddings (n-gram lookup) to detect semantically relevant fragments (e.g., "m4lware" via "mal" + "ware" overlap) even if character-level obfuscation survived the normalization pipeline.
-- **Fast-Semantic Path:** Prototype implemented in `semantic.rs` demonstrates <1ms latency by using embedded vector tables instead of full Transformer inference.
+- **Fast-Semantic Path:** Prototype implemented in `semantic.rs` demonstrates <50us latency (benchmarked at 31us on Enterprise Attack Corpus) by using sparse FNV-1a 4-gram embeddings.
 - **Advisory-Only Mode:** Currently gates no verdicts, preventing unverified ML behavior from impacting safety-critical paths.
+- **Portable Architecture:** Fast path is decoupled from heavyweight ONNX dependencies, allowing zero-cost semantic monitoring even in latency-constrained environments.
 
 #### 3.5.1 Centroid Generation and Traceability (IMPLEMENTED)
 
@@ -278,6 +281,32 @@ Provides Aho-Corasick based deterministic egress scanning across SSE streaming b
     2. Flushes the event.
     3. Triggers a hard TCP reset (`RST_STREAM` / `ConnectionAborted`) to terminate the session immediately.
 - **Configuration**: Managed via `streaming_egress_enabled` (toggle) and `streaming_egress_final_check` (optional full-buffer scan at stream completion).
+
+### 3.14 Contextual Anchor Validation (SA-080)
+
+SA-080 closes the loop between ingress intent and egress content. It provides a formal mapping from detected user intent to expected output structure.
+
+```mermaid
+graph TD
+    A[User Prompt] --> B{Pillar 1: Ingress}
+    B -- Matched Intent: Translation --> C[Set Anchor: TextOnly]
+    B -- Matched Intent: CodeGen --> D[Set Anchor: CodePermitted]
+    C --> E[LLM Inference]
+    D --> E
+    E --> F{Pillar 6: Egress}
+    F -- Anchor: TextOnly? --> G{Regex: Code Block?}
+    G -- Yes --> H[Block: AnchorViolation]
+    G -- No --> I[Pass]
+```
+
+| Ingress Intent | Egress Anchor | Enforcement Level |
+|----------------|---------------|-------------------|
+| `TaskTranslation` | `TextOnly` | Hard Block on Markdown (` ``` `, ` ~~~ `) |
+| `TaskCodeGeneration` | `CodePermitted` | Allowed |
+| `StructuredOutput` | `Structured` | Advisory JSON/XML Validation |
+| `None` (Default) | `None` | No restriction |
+
+This mechanism prevents "cross-intent leakage" where a seemingly benign request (e.g. for a poem) returns malicious code fragments or system secrets hidden in structural framing.
 
 #### [NEW] 3.11.3 Audit Schema V3
 To support multi-tenant forensics and meet SR-013, Audit Schema V3 introduces the mandatory `tenant_id` field. All `AuditEntry` records emitted by the voter include the `tenant_id` used for evaluation, ensuring full isolation during incident response and compliance reporting.

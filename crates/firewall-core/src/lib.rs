@@ -261,7 +261,7 @@ pub fn evaluate_raw_for_tenant(
     }
 
     let verdict = match prompt_input_or_block(raw.clone(), sequence, ingested_at_ns, now_ns) {
-        Ok(input) => evaluate_for_tenant(input, sequence, tenant_id.as_deref()),
+        Ok(mut input) => evaluate_for_tenant(&mut input, sequence, tenant_id.as_deref()),
         Err(v) => v,
     };
 
@@ -287,7 +287,7 @@ pub fn evaluate_raw(raw: impl Into<String>, sequence: u64) -> Verdict {
     evaluate_raw_for_tenant(raw, sequence, None)
 }
 /// Evaluate a prompt through the 1oo2D safety gate for a specific tenant.
-pub fn evaluate_for_tenant(input: PromptInput, sequence: u64, tenant_id: Option<&str>) -> Verdict {
+pub fn evaluate_for_tenant(input: &mut PromptInput, sequence: u64, tenant_id: Option<&str>) -> Verdict {
     // DC-GAP-05: guard for direct firewall-core callers (mirrors napi SA-021 guard).
     if !is_initialised() {
         return uninitialised_block(sequence, now_ns());
@@ -296,7 +296,7 @@ pub fn evaluate_for_tenant(input: PromptInput, sequence: u64, tenant_id: Option<
 }
 
 /// Fallback for single-tenant evaluation.
-pub fn evaluate(input: PromptInput, sequence: u64) -> Verdict {
+pub fn evaluate(input: &mut PromptInput, sequence: u64) -> Verdict {
     evaluate_for_tenant(input, sequence, None)
 }
 
@@ -372,8 +372,9 @@ mod tests {
 
     fn eval(text: &str) -> Verdict {
         init().expect("init failed in test");
+        let mut input = PromptInput::new(text).expect("PromptInput::new failed in test");
         evaluate(
-            PromptInput::new(text).expect("PromptInput::new failed in test"),
+            &mut input,
             0,
         )
     }
@@ -511,11 +512,11 @@ mod tests {
         // Note: INIT_RESULT is a OnceLock — if other tests already called init(),
         // this test verifies the guard passes through correctly (init succeeded).
         // The uninitialised path is tested by the guard logic itself.
-        let input =
+        let mut input =
             PromptInput::new("What is the capital of France?").expect("PromptInput::new failed");
         // After init() has been called by other tests, is_initialised() is true.
         // This test documents the contract: evaluate() is safe to call after init().
-        let v = evaluate(input, 99);
+        let v = evaluate(&mut input, 99);
         // Either passes (init was called) or blocks (uninitialised) — never panics.
         let _ = v.is_pass();
     }

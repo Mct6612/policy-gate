@@ -13,6 +13,7 @@ verification/.dataset_cache/
 fuzz/corpus/
 
 # Local docs / backups
+models/
 README-old.md
 plans/
 firewall.toml

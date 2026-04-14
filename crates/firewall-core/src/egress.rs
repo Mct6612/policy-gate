@@ -43,6 +43,9 @@ fn egress_reason(
             BlockReason::ForbiddenPattern { pattern_id } => EgressBlockReason::HarmfulContent {
                 category: pattern_id.clone(),
             },
+            BlockReason::AnchorViolation { detail } => EgressBlockReason::AnchorViolation {
+                detail: detail.clone(),
+            },
             other => EgressBlockReason::Other {
                 detail: format!("{:?}", other),
             },

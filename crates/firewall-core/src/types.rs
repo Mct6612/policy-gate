@@ -20,6 +20,9 @@ pub struct PromptInput {
     /// SA-048: Set to true if Unicode Format (Cf) or visual-spoofing characters
     /// were detected and stripped during normalisation.
     pub has_obfuscation: bool,
+    /// SA-080: The intent detected during ingress evaluation.
+    /// Used to set the EgressAnchor for output validation.
+    pub matched_intent: Option<MatchedIntent>,
 }
 
 impl PromptInput {
@@ -42,6 +45,7 @@ impl PromptInput {
             role: None,
             ingested_at_ns,
             has_obfuscation,
+            matched_intent: None,
         })
     }
 
@@ -848,6 +852,46 @@ pub enum MatchedIntent {
     },
 }
 
+/// SA-080: Contextual Anchor for egress validation.
+/// Defines the expected "shape" of the response based on the ingress intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EgressAnchor {
+    /// No executable code allowed (Markdown blocks).
+    /// High-entropy data is Advisory only (DiagnosticDisagreement) by default.
+    TextOnly,
+    /// Executable code blocks are permitted.
+    CodePermitted,
+    /// Structured data (JSON/YAML/CSV) is expected/permitted.
+    Structured,
+    /// Legacy/Default - no specific anchor-based restrictions.
+    None,
+}
+
+impl MatchedIntent {
+    /// Technical mapping from Intent to Egress Constraint (Anchor).
+    /// This is a key safety logic for context-aware filtering (SA-080).
+    pub fn expected_anchor(&self) -> EgressAnchor {
+        match self {
+            Self::TaskCodeGeneration => EgressAnchor::CodePermitted,
+            Self::StructuredOutput => EgressAnchor::Structured,
+            Self::AgenticToolUse => EgressAnchor::Structured,
+            // Translation, Summarisation, and Factual Questions should NOT return code.
+            Self::TaskTranslation
+            | Self::TaskTextSummarisation
+            | Self::QuestionFactual
+            | Self::QuestionCausal
+            | Self::QuestionComparative
+            | Self::TaskDataExtraction
+            | Self::ConversationalGreeting
+            | Self::ConversationalAcknowledgement
+            | Self::SystemMetaQuery
+            | Self::ControlledCreative => EgressAnchor::TextOnly,
+            // Semantic violations or None fallback to default.
+            _ => EgressAnchor::None,
+        }
+    }
+}
+
 /// Structured reason for a Block decision.
 /// pattern_id uses String (not &'static str) to allow Deserialize.
 ///
@@ -880,6 +924,10 @@ pub enum BlockReason {
     /// The request arrived without a valid tenant ID and anonymous access is disabled.
     /// (Pillar 5: Multi-Tenant Policy Hub)
     UnknownTenant,
+    /// SA-080: The output violated the expected contextual anchor.
+    AnchorViolation {
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1123,6 +1171,9 @@ pub enum EgressBlockReason {
     SystemPromptLeakage { detail: String },
     PiiDetected { pii_type: String },
     HarmfulContent { category: String },
+    /// SA-080: The output violated the expected contextual anchor.
+    /// e.g. code found when TextOnly was expected.
+    AnchorViolation { detail: String },
     Other { detail: String },
 }
 
@@ -1132,6 +1183,7 @@ impl std::fmt::Display for EgressBlockReason {
             Self::SystemPromptLeakage { detail } => write!(f, "System Prompt Leakage: {}", detail),
             Self::PiiDetected { pii_type } => write!(f, "PII Detected: {}", pii_type),
             Self::HarmfulContent { category } => write!(f, "Harmful Content: {}", category),
+            Self::AnchorViolation { detail } => write!(f, "Anchor Violation: {}", detail),
             Self::Other { detail } => write!(f, "Egress Block: {}", detail),
         }
     }

@@ -6,7 +6,9 @@
 //
 // Timestamp: 2026-04-05T03:30:00Z
 
+#[allow(dead_code)]
 pub const CENTROID_DIMENSIONS: usize = 128;
+#[allow(dead_code)]
 pub const NUM_CENTROIDS: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -112,4 +114,5 @@ pub const ATTACK_CENTROIDS: &[(CentroidId, [f32; 128])] = &[
     ]),
 ];
 
+#[allow(dead_code)]
 pub const EXPECTED_CENTROID_HASH: &str = "BOOTSTRAPPED-128";

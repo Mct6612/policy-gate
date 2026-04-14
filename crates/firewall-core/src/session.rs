@@ -509,11 +509,11 @@ pub fn get_session_manager() -> Option<&'static SessionManager> {
 /// Evaluate message with session context (enhanced version of evaluate_raw).
 pub fn evaluate_with_session(
     session_id: &str,
-    input: &PromptInput,
+    input: &mut PromptInput,
     sequence: u64,
 ) -> crate::types::Verdict {
     // First, get the base firewall verdict
-    let base_verdict = crate::evaluate_raw(&input.text, sequence);
+    let base_verdict = crate::evaluate(input, sequence);
     
     // Then, analyze with session context
     if let Some(session_manager) = get_session_manager() {

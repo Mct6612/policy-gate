@@ -15,7 +15,8 @@ license.workspace = true
 [features]
 default = []
 fips = ["dep:aws-lc-rs"]
-semantic = ["dep:ort", "dep:ndarray"]
+semantic = []
+semantic-bert = ["semantic", "dep:ort", "dep:ndarray"]
 parallel = ["dep:rayon"]
 # Pillar 6: Streaming Egress — enables Aho-Corasick stream scanner
 streaming-egress = ["dep:aho-corasick"]

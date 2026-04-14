@@ -90,7 +90,7 @@ fn unknown_tenant_block(input: &PromptInput, sequence: u64, now: u128, tenant_id
 }
 
 pub(crate) fn evaluate(
-    input: PromptInput,
+    input: &mut PromptInput,
     sequence: u64,
     tenant_id: Option<&str>,
     now_ns: fn() -> u128,
@@ -149,6 +149,17 @@ pub(crate) fn evaluate(
             verdict_kind = VerdictKind::Block;
         }
     }
+
+    // SA-080: Extract and persist the winning intent for context-aware egress anchors.
+    // In a 1oo2 system, if they disagree on intent but both pass, we log DiagnosticDisagreement.
+    // We prefer Channel A's intent for the anchor, as it's the primary system FSM.
+    let final_intent = match (&channel_a.decision, &channel_b.decision) {
+        (ChannelDecision::Pass { intent }, _) => Some(intent.clone()),
+        (_, ChannelDecision::Pass { intent }) => Some(intent.clone()),
+        _ => None,
+    };
+    input.matched_intent = final_intent;
+
     apply_profile_filter(&mut verdict_kind, &mut channel_a, &mut channel_b, config.as_ref());
 
     if config.as_ref().and_then(|c| c.shadow_mode).unwrap_or(false) 
