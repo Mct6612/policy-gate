@@ -76,7 +76,14 @@ pub async fn handle_streaming_chat_completion(
     }
 
     // ── Resolve tenant config for streaming settings ──────────────────────────
-    let config = firewall_core::config::FirewallConfig::load().unwrap_or_default();
+    let config = match firewall_core::config::FirewallConfig::load() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to load streaming config: {}, using defaults", e);
+            counter!("policy_gate_config_load_errors_total").increment(1);
+            firewall_core::config::FirewallConfig::default()
+        }
+    };
     let do_final_check = config.streaming_egress_final_check;
 
     // ── Forward to upstream with stream: true ─────────────────────────────────
@@ -126,13 +133,27 @@ pub async fn handle_streaming_chat_completion(
     let egress_sequence = next_sequence();
     let tenant_id_owned = tenant_id.clone();
 
-    // Spawn the scanning loop as a background task.
-    tokio::spawn(async move {
+    // Spawn the scanning loop as a background task with timeout protection.
+    let _join_handle = tokio::spawn(async move {
         let mut byte_stream = upstream_response.bytes_stream();
         let mut accumulated: Vec<u8> = Vec::new();
         let mut blocked = false;
+        const STREAM_CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-        while let Some(chunk_result) = byte_stream.next().await {
+        loop {
+            let chunk_result = match tokio::time::timeout(STREAM_CHUNK_TIMEOUT, byte_stream.next()).await {
+                Ok(Some(result)) => result,
+                Ok(None) => break,  // Stream closed normally (EOS)
+                Err(_) => {
+                    warn!("Streaming chunk timeout (30s exceeded), closing connection");
+                    counter!("policy_gate_streaming_timeout_total").increment(1);
+                    let _ = sender.send(Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "stream chunk timeout",
+                    ))).await;
+                    break;
+                }
+            };
             let chunk = match chunk_result {
                 Ok(c) => c,
                 Err(e) => {
@@ -294,10 +315,18 @@ mod tests {
             .route("/v1/chat/completions", post(handle_streaming_chat_completion))
             .with_state(state);
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(l) => l,
+            Err(e) => panic!("Failed to bind proxy server: {}", e),
+        };
+        let port = match listener.local_addr() {
+            Ok(addr) => addr.port(),
+            Err(e) => panic!("Failed to get proxy port: {}", e),
+        };
         tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            if let Err(e) = axum::serve(listener, app).await {
+                eprintln!("Proxy server error: {}", e);
+            }
         });
         port
     }
@@ -397,8 +426,16 @@ mod tests {
         assert_eq!(resp.status(), 200);
         let mut collected = String::new();
         let mut stream = resp.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            collected.push_str(&String::from_utf8_lossy(&chunk.unwrap()));
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    collected.push_str(&String::from_utf8_lossy(&chunk));
+                }
+                Err(e) => {
+                    eprintln!("Stream decode error: {}", e);
+                    break;
+                }
+            }
         }
         
         assert!(collected.contains("Hello "));

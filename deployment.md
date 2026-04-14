@@ -307,7 +307,7 @@ In multi-tenant deployments, the application MUST ensure that `AuditEntry` metad
 | Audit Field | Requirement |
 |-------------|-------------|
 | `tenant_id` | Mandatory - Used for logical data separation in the audit log. |
-| `sequence` | Mandatory - Monotonically increasing counter per tenant for HMAC chaining. |
+| `sequence` | Mandatory - Monotonically increasing audit counter. Global monotonic process-wide ordering is recommended; tenant scoping is optional at the storage layer, not required by the HMAC chain implementation. |
 
 ---
 

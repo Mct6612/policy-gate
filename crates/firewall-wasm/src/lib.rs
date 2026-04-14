@@ -11,11 +11,16 @@ pub fn init_firewall() -> Result<(), String> {
 }
 
 #[wasm_bindgen]
+pub fn set_wasm_hmac_key(key_hex: String) -> Result<(), String> {
+    firewall_core::set_wasm_hmac_key(&key_hex)
+}
+
+#[wasm_bindgen]
 pub fn evaluate_prompt(text: String, sequence: u64) -> Result<JsValue, String> {
-    let input = PromptInput::new(&text)
+    let mut input = PromptInput::new(&text)
         .map_err(|e| format!("Normalization failed: {:?}", e))?;
     
-    let verdict = evaluate(input, sequence);
+    let verdict = evaluate(&mut input, sequence);
     
     serde_wasm_bindgen::to_value(&verdict)
         .map_err(|e| format!("Serialization failed: {}", e))

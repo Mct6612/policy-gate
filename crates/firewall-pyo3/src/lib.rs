@@ -81,6 +81,10 @@ fn egress_verdict_to_dict(py: Python<'_>, v: firewall_core::EgressVerdict) -> Py
                 reason_dict.set_item("type", "Other")?;
                 reason_dict.set_item("detail", detail)?;
             }
+            firewall_core::EgressBlockReason::AnchorViolation { detail } => {
+                reason_dict.set_item("type", "AnchorViolation")?;
+                reason_dict.set_item("detail", detail)?;
+            }
         }
         d.set_item("egress_reason", reason_dict)?;
     } else {

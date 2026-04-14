@@ -148,7 +148,7 @@ fn init_with_profile_internal(
                 .map_err(|e| format!("Channel D init failed: {}", e))?;
         }
 
-        crate::audit::init_audit();
+        crate::audit::init_audit()?;
         session::init_session_manager();
         fsm::intent_patterns::startup_self_test().map_err(|errs| errs.join("; "))
     });
@@ -180,23 +180,49 @@ pub fn init_multi_tenant_registry<P: AsRef<std::path::Path>>(
 
     let registry = TENANT_REGISTRY.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()));
     
-    // Scan for .toml files
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("toml") {
-                if let Ok(cfg) = config::FirewallConfig::load_from_path(&path) {
-                    let tenant_id = cfg.tenant_id.clone()
-                        .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
-                        .unwrap_or_else(|| "default".into());
-                    
-                    if let Ok(mut lock) = registry.write() {
-                        lock.insert(tenant_id, cfg);
-                    }
-                }
-            }
+    // CVE-FIX: Strict error handling for directory access to prevent TOCTOU (CVE-367)
+    // If read_dir() fails, return error immediately instead of silently skipping
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| crate::FirewallInitError::PatternCompileFailure(
+            format!("Cannot read directory {}: {}. Init failed (fail-closed).", dir.display(), e)
+        ))?;
+    
+    let mut loaded_count = 0;
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            crate::FirewallInitError::PatternCompileFailure(format!(
+                "Cannot enumerate directory {}: {}. Init failed (fail-closed).",
+                dir.display(),
+                e
+            ))
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+            let cfg = config::FirewallConfig::load_from_path(&path).map_err(|e| {
+                crate::FirewallInitError::PatternCompileFailure(format!(
+                    "Failed to load tenant config {}: {}. Init failed (fail-closed).",
+                    path.display(),
+                    e
+                ))
+            })?;
+            let tenant_id = cfg
+                .tenant_id
+                .clone()
+                .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
+                .unwrap_or_else(|| "default".into());
+
+            let mut lock = registry.write().map_err(|_| {
+                crate::FirewallInitError::PatternCompileFailure(
+                    "Tenant registry lock poisoned during init. Init failed (fail-closed).".into(),
+                )
+            })?;
+            lock.insert(tenant_id, cfg);
+            loaded_count += 1;
         }
     }
+    
+    // Log how many tenants were loaded (could be 0 which is acceptable for empty directories)
+    eprintln!("[init] Loaded {} tenant configurations from {}", loaded_count, dir.display());
 
     // After loading all tenants, trigger the standard init path for common components
     init_with_profile_internal(FirewallProfile::Default, None)
@@ -286,4 +312,3 @@ pub(crate) fn apply_defaults(cfg: &mut config::FirewallConfig, profile_intents: 
         cfg.allow_anonymous_tenants = Some(true);
     }
 }
-

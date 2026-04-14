@@ -60,7 +60,7 @@ pub fn firewall_init_multi_tenant_registry(token: String, dir_path: String) -> O
 pub struct JsEvalInput {
     pub text: String,
     pub role: Option<String>,
-    pub sequence: u32,
+    pub sequence: String,
 }
 
 #[napi(object)]
@@ -71,7 +71,7 @@ pub struct JsVerdict {
     pub channel_b_decision: String,
     pub elapsed_us: u32,
     pub input_hash: String,
-    pub sequence: u32,
+    pub sequence: String,
     pub tenant_id: String,
     /// Populated for all Block verdicts. Empty string on Pass.
     pub block_reason: String,
@@ -93,7 +93,11 @@ pub async fn firewall_evaluate(input: JsEvalInput) -> Result<JsVerdict> {
     }
 
     let text = input.text;
-    let sequence = input.sequence as u64;
+    let sequence: u64 = input.sequence
+        .parse()
+        .map_err(|_| napi::Error::from_reason(
+            format!("Invalid sequence number: '{}'. Expected a decimal number.", input.sequence)
+        ))?;
     // Note: input.role is metadata only — not used in any safety-path evaluation.
     // evaluate_raw handles normalisation, size-check, and both channels internally.
 
@@ -117,7 +121,7 @@ pub async fn firewall_evaluate(input: JsEvalInput) -> Result<JsVerdict> {
         channel_b_decision: stable_channel_decision(&verdict.channel_b.decision),
         elapsed_us: verdict.audit.total_elapsed_us.min(u32::MAX as u64) as u32,
         input_hash: verdict.audit.input_hash,
-        sequence: verdict.audit.sequence.min(u32::MAX as u64) as u32,
+        sequence: verdict.audit.sequence.to_string(),
         tenant_id: verdict.audit.tenant_id.unwrap_or_else(|| "default".into()),
         block_reason,
     })
@@ -135,7 +139,11 @@ pub async fn firewall_evaluate_for_tenant(input: JsEvalInput, tenant_id: String)
     }
 
     let text = input.text;
-    let sequence = input.sequence as u64;
+    let sequence: u64 = input.sequence
+        .parse()
+        .map_err(|_| napi::Error::from_reason(
+            format!("Invalid sequence number: '{}'. Expected a decimal number.", input.sequence)
+        ))?;
     let verdict = evaluate_raw_for_tenant(text, sequence, Some(tenant_id));
 
     let block_reason = verdict.audit.block_reason
@@ -150,7 +158,7 @@ pub async fn firewall_evaluate_for_tenant(input: JsEvalInput, tenant_id: String)
         channel_b_decision: stable_channel_decision(&verdict.channel_b.decision),
         elapsed_us: verdict.audit.total_elapsed_us.min(u32::MAX as u64) as u32,
         input_hash: verdict.audit.input_hash,
-        sequence: verdict.audit.sequence.min(u32::MAX as u64) as u32,
+        sequence: verdict.audit.sequence.to_string(),
         tenant_id: verdict.audit.tenant_id.unwrap_or_else(|| "default".into()),
         block_reason,
     })
@@ -185,6 +193,7 @@ fn stable_block_reason(r: &firewall_core::BlockReason) -> String {
         ProhibitedIntent { intent }     => format!("ProhibitedIntent:{}", stable_intent(intent)),
         SemanticTrigger { similarity, reason } => format!("SemanticTrigger:{:.3}:{}", similarity, reason),
         UnknownTenant                   => "UnknownTenant".into(),
+        AnchorViolation { detail }      => format!("AnchorViolation:{}", detail),
     }
 }
 
@@ -249,13 +258,13 @@ pub struct JsEgressVerdict {
     /// Populated for EgressBlock verdicts. Empty string on Pass.
     pub egress_reason: String,
     pub input_hash: String,
-    pub sequence: u32,
+    pub sequence: String,
 }
 
 #[napi]
 pub async fn firewall_evaluate_messages(
     messages: Vec<JsChatMessage>,
-    base_sequence: u32,
+    base_sequence: String,
 ) -> Result<JsConversationVerdict> {
     // OC-01 guard — same as firewall_evaluate.
     let init_ok: &std::result::Result<(), String> = INIT_RESULT.get_or_init(|| {
@@ -273,7 +282,13 @@ pub async fn firewall_evaluate_messages(
         .map(|m| ChatMessage { role: m.role, content: m.content })
         .collect();
 
-    let cv = evaluate_messages(&core_messages, base_sequence as u64);
+    let base_sequence: u64 = base_sequence
+        .parse()
+        .map_err(|_| napi::Error::from_reason(
+            format!("Invalid base sequence number: '{}'. Expected a decimal number.", base_sequence)
+        ))?;
+
+    let cv = evaluate_messages(&core_messages, base_sequence);
 
     let js_verdicts: Vec<JsVerdict> = cv.verdicts.iter().map(|v| {
         let block_reason = v.audit.block_reason
@@ -287,7 +302,7 @@ pub async fn firewall_evaluate_messages(
             channel_b_decision: stable_channel_decision(&v.channel_b.decision),
             elapsed_us: v.audit.total_elapsed_us.min(u32::MAX as u64) as u32,
             input_hash: v.audit.input_hash.clone(),
-            sequence: v.audit.sequence.min(u32::MAX as u64) as u32,
+            sequence: v.audit.sequence.to_string(),
             tenant_id: v.audit.tenant_id.clone().unwrap_or_else(|| "default".into()),
             block_reason,
         }
@@ -304,7 +319,7 @@ pub async fn firewall_evaluate_messages(
 pub async fn firewall_evaluate_output(
     prompt: String,
     response: String,
-    sequence: u32,
+    sequence: String,
 ) -> Result<JsEgressVerdict> {
     let init_ok: &std::result::Result<(), String> = INIT_RESULT.get_or_init(|| {
         init().map_err(|e: firewall_core::FirewallInitError| e.to_string())
@@ -316,17 +331,23 @@ pub async fn firewall_evaluate_output(
         )));
     }
 
+    let sequence: u64 = sequence
+        .parse()
+        .map_err(|_| napi::Error::from_reason(
+            format!("Invalid sequence number: '{}'. Expected a decimal number.", sequence)
+        ))?;
+
     let prompt = PromptInput::new(prompt)
         .map_err(|e| napi::Error::from_reason(format!("invalid prompt for egress evaluation: {}", stable_block_reason(&e))))?;
-    let ev = evaluate_output(&prompt, &response, sequence as u64)
+    let ev = evaluate_output(&prompt, &response, sequence)
         .map_err(napi::Error::from_reason)?;
 
     let (input_hash, seq) = match &ev.audit {
         Some(audit) => (
             audit.input_hash.clone(),
-            audit.sequence.min(u32::MAX as u64) as u32,
+            audit.sequence.to_string(),
         ),
-        None => (String::new(), sequence),
+        None => (String::new(), sequence.to_string()),
     };
 
     Ok(JsEgressVerdict {
@@ -349,5 +370,6 @@ fn stable_egress_reason(r: &firewall_core::EgressBlockReason) -> String {
         PiiDetected { pii_type } => format!("PiiDetected:{}", pii_type),
         HarmfulContent { category } => format!("HarmfulContent:{}", category),
         Other { detail } => format!("Other:{}", detail),
+        AnchorViolation { detail } => format!("AnchorViolation:{}", detail),
     }
 }

@@ -153,41 +153,35 @@ policy-hub/
 
 ```typescript
 import { Firewall } from "policy-gate";
-import { readFileSync } from "fs";
 
-// Profil laden
-const profileConfig = readFileSync('./policy-hub/profiles/research-agent/firewall.toml', 'utf-8');
-
-const firewall = await Firewall.create({
-  config: profileConfig,
-  onAudit: async (entry) => {
-    console.log(entry);
+// Die TypeScript-API lädt TOML-Profile nicht direkt als String.
+// Stattdessen wird der Multi-Tenant-Registry-Pfad verwendet.
+const firewall = await Firewall.createMultiTenant(
+  process.env.POLICY_GATE_INIT_TOKEN!,
+  "./policy-hub/profiles",
+  {
+    onAudit: async (entry) => {
+      console.log(entry.tenantId, entry.sequence.toString());
+    },
   },
-});
+);
 ```
 
 ### Preset kombinieren
 
 ```typescript
-import { Firewall } from "policy-gate";
+import { readFileSync, writeFileSync } from "fs";
 
-// Basis-Preset laden und anpassen
-const basePreset = readFileSync('./policy-hub/presets/strict.toml', 'utf-8');
-
-// Custom Intents hinzufügen
+// Preset lokal zusammenbauen und als tenant-TOML schreiben
+const basePreset = readFileSync("./policy-hub/presets/strict.toml", "utf-8");
 const customConfig = `
 ${basePreset}
 
-# Eigene Intents hinzufügen
-[[custom_intents]]
-id = "IP-300"
-intent = "TaskTextSummarisation"
-regex = "(?i)\\b(custom pattern)\\b.{0,100}"
+tenant_id = "custom-tenant"
 `;
 
-const firewall = await Firewall.create({
-  config: customConfig,
-});
+writeFileSync("./policy-hub/profiles/custom-tenant.toml", customConfig);
+// Danach über Firewall.createMultiTenant(...) laden
 ```
 
 ## Konfigurations-Optionen

@@ -108,38 +108,50 @@ class OperatorAction(str, Enum):
 def generate_regex_from_text(input_text: str) -> str:
     """
     Generate a regex pattern from an input text fragment.
-    
+
     This function analyzes the input text and creates an appropriate regex pattern
     that can be used in the firewall allowlist. It handles:
     - Special regex characters (escaping)
     - Leetspeak patterns (0->o, 1->l, 3->e, etc.)
     - Common obfuscation techniques
     - Word boundaries for exact matching
-    
+
     Args:
         input_text: The text fragment to generate a regex for
-        
+
     Returns:
         A regex pattern string suitable for firewall.toml
     """
     if not input_text:
         return ""
-    
+
     # Step 1: Basic escaping of special regex characters using re.escape()
     escaped = re.escape(input_text)
-    
+
     # Step 2: Detect and handle leetspeak patterns
     leet_map = {
-        "0": "[0o]", "1": "[1li]", "2": "[2z]", "3": "[3e]", "4": "[4a]",
-        "5": "[5s]", "6": "[6g]", "7": "[7t]", "8": "[8b]", "9": "[9g]",
-        "@": "[@a]", "$": "[$s]", "|": "[|Il]"
+        "0": "[0o]",
+        "1": "[1li]",
+        "2": "[2z]",
+        "3": "[3e]",
+        "4": "[4a]",
+        "5": "[5s]",
+        "6": "[6g]",
+        "7": "[7t]",
+        "8": "[8b]",
+        "9": "[9g]",
+        "@": "[@a]",
+        "$": "[$s]",
+        "|": "[|Il]",
     }
-    
+
     has_leetspeak = any(c in leet_map for c in input_text.lower())
-    
+
     # Step 3: Check for mixed case (case-insensitive matching)
-    has_mixed_case = input_text.lower() != input_text and input_text.upper() != input_text
-    
+    has_mixed_case = (
+        input_text.lower() != input_text and input_text.upper() != input_text
+    )
+
     # Step 4: Build the final pattern
     if has_leetspeak:
         # Create pattern with leetspeak alternatives
@@ -157,54 +169,61 @@ def generate_regex_from_text(input_text: str) -> str:
     else:
         # Exact match (case-sensitive)
         result = escaped
-    
+
     return result
 
 
 def generate_toml_patch(pattern: str, reason: str, sequence_id: int = 0) -> str:
     """
     Generate a TOML patch snippet for the firewall configuration.
-    
+
     Args:
         pattern: The regex pattern to add to the allowlist
         reason: Reason for adding this pattern (e.g., "Operator-Review: FP #<id>")
         sequence_id: Optional sequence ID for reference
-        
+
     Returns:
         A TOML snippet ready to be added to firewall.toml
     """
     if not pattern:
         return "# No pattern provided"
-    
+
     # Build the TOML snippet
     reason_text = reason if reason else f"Operator-Review: FP #{sequence_id}"
-    
+
     toml_snippet = f'''[[intent_patterns.allowlist]]
 pattern = "{pattern}"
 reason = "{reason_text}"'''
-    
+
     return toml_snippet
 
 
-def write_toml_patch(pattern: str, reason: str, sequence_id: int = 0, toml_path: str = "firewall.toml") -> bool:
+def write_toml_patch(
+    pattern: str, reason: str, sequence_id: int = 0, toml_path: str = "firewall.toml"
+) -> bool:
     """
     Write a TOML patch directly to the firewall.toml file.
-    
+
     Args:
         pattern: The regex pattern to add to the allowlist
         reason: Reason for adding this pattern (e.g., "Operator-Review: FP #<id>")
         sequence_id: Optional sequence ID for reference
         toml_path: Path to the TOML config file (default: firewall.toml)
-        
+
     Returns:
         True if successful, False if failed
     """
     if not pattern:
         print("  [ERROR] No pattern provided", file=sys.stderr)
         return False
-    
+
+    # Validate path to prevent directory traversal
+    toml_path_abs = (Path.cwd() / toml_path).resolve()
+    if ".." in toml_path or toml_path_abs.parent != Path.cwd().resolve():
+        print(f"  [ERROR] Invalid path: traversal not allowed", file=sys.stderr)
+        return False
     toml_file = Path(toml_path)
-    
+
     # Check if firewall.toml exists, otherwise try firewall.example.toml
     if not toml_file.exists():
         example_path = Path("firewall.example.toml")
@@ -212,11 +231,15 @@ def write_toml_patch(pattern: str, reason: str, sequence_id: int = 0, toml_path:
             print(f"  [INFO] {toml_path} not found, copying from firewall.example.toml")
             # Copy example to firewall.toml
             import shutil
+
             shutil.copy(example_path, toml_file)
         else:
-            print(f"  [ERROR] No TOML config file found: {toml_path} or firewall.example.toml", file=sys.stderr)
+            print(
+                f"  [ERROR] No TOML config file found: {toml_path} or firewall.example.toml",
+                file=sys.stderr,
+            )
             return False
-    
+
     # Read existing TOML
     try:
         with open(toml_file, "rb") as f:
@@ -224,48 +247,55 @@ def write_toml_patch(pattern: str, reason: str, sequence_id: int = 0, toml_path:
     except Exception as e:
         print(f"  [ERROR] Failed to parse TOML: {e}", file=sys.stderr)
         return False
-    
+
     # Ensure intent_patterns section exists
     if "intent_patterns" not in config:
         config["intent_patterns"] = {}
     if "allowlist" not in config["intent_patterns"]:
         config["intent_patterns"]["allowlist"] = []
-    
+
     # Add new pattern entry
     reason_text = reason if reason else f"Operator-Review: FP #{sequence_id}"
-    new_entry = {
-        "pattern": pattern,
-        "reason": reason_text
-    }
+    new_entry = {"pattern": pattern, "reason": reason_text}
     config["intent_patterns"]["allowlist"].append(new_entry)
-    
+
     # Write back to TOML file with proper formatting
     try:
         # First read existing content
         with open(toml_file, "r", encoding="utf-8") as f:
             content = f.read()
-        
+
         # Now append the new entry
         with open(toml_file, "w", encoding="utf-8") as f:
             # Write header comment if not present
-            if "intent_patterns.allowlist" not in content and "[[intent_patterns.allowlist]]" not in content:
+            if (
+                "intent_patterns.allowlist" not in content
+                and "[[intent_patterns.allowlist]]" not in content
+            ):
                 f.write("# Auto-generated allowlist patterns\n")
-            
+
             # Append the new entry
             f.write(content)
-            if not content.endswith('\n'):
-                f.write('\n')
-            f.write(f'\n[[intent_patterns.allowlist]]\n')
+            if not content.endswith("\n"):
+                f.write("\n")
+            f.write(f"\n[[intent_patterns.allowlist]]\n")
             f.write(f'pattern = "{pattern}"\n')
             f.write(f'reason = "{reason_text}"\n')
-        
+
         print(f"  [OK] Pattern written to {toml_path}")
         return True
     except Exception as e:
         print(f"  [ERROR] Failed to write TOML: {e}", file=sys.stderr)
         return False
 
-def write_rule_exception_patch(rule_id: str, pattern: str, reason: str, sequence_id: int = 0, toml_path: str = "firewall.toml") -> bool:
+
+def write_rule_exception_patch(
+    rule_id: str,
+    pattern: str,
+    reason: str,
+    sequence_id: int = 0,
+    toml_path: str = "firewall.toml",
+) -> bool:
     """Writes a generic TOML block comment for rule exceptions."""
     if not pattern:
         print("  [ERROR] No pattern provided", file=sys.stderr)
@@ -278,21 +308,24 @@ def write_rule_exception_patch(rule_id: str, pattern: str, reason: str, sequence
                 content = f.read()
         else:
             content = ""
-            
+
         with open(toml_file, "w", encoding="utf-8") as f:
             f.write(content)
-            if not content.endswith("\n"): f.write("\n")
+            if not content.endswith("\n"):
+                f.write("\n")
             f.write("\n[[rule_exceptions]]\n")
-            f.write(f"rule_id = \"{rule_id}\"\n")
-            f.write(f"regex = \"{pattern}\"\n")
-            f.write(f"reason = \"{reason_text}\"\n")
+            f.write(f'rule_id = "{rule_id}"\n')
+            f.write(f'regex = "{pattern}"\n')
+            f.write(f'reason = "{reason_text}"\n')
         return True
     except Exception as e:
         print(f"  [ERROR] Failed to write Rule Exception to TOML: {e}", file=sys.stderr)
         return False
 
+
 def patch_safety_manual(snippet: str) -> bool:
     import os
+
     safety_path = os.path.join(os.path.dirname(__file__), "..", "SAFETY_MANUAL.md")
     if not os.path.exists(safety_path):
         print("  [WARN] SAFETY_MANUAL.md not found, skipping patch.")
@@ -300,10 +333,10 @@ def patch_safety_manual(snippet: str) -> bool:
     try:
         with open(safety_path, "r", encoding="utf-8") as f:
             content = f.read()
-        
+
         if "## 9. Auto-Generated Operator Logs" not in content:
             content += "\n\n## 9. Auto-Generated Operator Logs\n\nThe following section acts as a Git-Ops ledger for rule and pattern tunings initiated by the operator.\n"
-        
+
         content += "\n" + snippet + "\n"
         with open(safety_path, "w", encoding="utf-8") as f:
             f.write(content)
@@ -312,55 +345,77 @@ def patch_safety_manual(snippet: str) -> bool:
         print(f"  [ERROR] Failed to patch SAFETY_MANUAL: {e}")
         return False
 
+
 def trigger_hot_reload() -> bool:
     """Checks for the PID file and ensures hot-reload is picked up."""
     import os
+
     pid_path = "/tmp/policy-gate.pid"
     if os.path.exists(pid_path):
         try:
             with open(pid_path, "r") as f:
                 pid = int(f.read().strip())
-            
+
             # Check if process is still alive (cross-platform check)
             try:
                 import psutil
+
                 if psutil.pid_exists(pid):
-                    print(f"  [HOT-RELOAD] 🌀  Sent reload nudge to PID {pid} (via background polling)")
+                    print(
+                        f"  [HOT-RELOAD] 🌀  Sent reload nudge to PID {pid} (via background polling)"
+                    )
                     return True
                 else:
                     print("  [HOT-RELOAD] ⚠  PID file found but process is gone.")
             except ImportError:
                 # Basic check without psutil
-                print(f"  [HOT-RELOAD] 🧩  Assuming PID {pid} is active. Background worker should pick up changes in ~2s.")
+                print(
+                    f"  [HOT-RELOAD] 🧩  Assuming PID {pid} is active. Background worker should pick up changes in ~2s."
+                )
                 return True
         except Exception as e:
             print(f"  [HOT-RELOAD] ⚠  Failed to read PID file: {e}")
     else:
-        print("  [HOT-RELOAD] ⚠  No active firewall-cli/proxy PID found. Manual restart might be required.")
+        print(
+            "  [HOT-RELOAD] ⚠  No active firewall-cli/proxy PID found. Manual restart might be required."
+        )
     return False
+
 
 def execute_git_commit(message: str) -> bool:
     import os
     import subprocess
+
     repo_dir = os.path.dirname(os.path.dirname(__file__))
     try:
-        subprocess.run(["git", "add", "-f", "firewall.toml", "SAFETY_MANUAL.md"], cwd=repo_dir, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", message], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "add", "-f", "firewall.toml", "SAFETY_MANUAL.md"],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+        )
         return True
     except subprocess.CalledProcessError as e:
         print(f"  [ERROR] Git commit failed: {e.stderr}", file=sys.stderr)
         return False
 
+
 def extract_problematic_text(detail: "DisagreementDetail") -> Optional[str]:
     """
     Extract the problematic text from a DisagreementDetail for pattern generation.
-    
+
     This function attempts to find the text that triggered the false positive
     by examining the available input text and channel analysis.
-    
+
     Args:
         detail: The DisagreementDetail to extract text from
-        
+
     Returns:
         The text fragment to create a pattern for, or None if not available
     """
@@ -371,19 +426,19 @@ def extract_problematic_text(detail: "DisagreementDetail") -> Optional[str]:
             # The original (non-normalised) input caused the FP
             return detail.input_text
         return detail.input_text
-    
+
     # Priority 2: Try to get matched fragment from channel analysis
     if detail.channel_a.matched_fragment:
         return detail.channel_a.matched_fragment
     if detail.channel_b.matched_fragment:
         return detail.channel_b.matched_fragment
-    
+
     # Priority 3: Use the matched pattern if available
     if detail.channel_a.matched_pattern:
         return detail.channel_a.matched_pattern
     if detail.channel_b.matched_pattern:
         return detail.channel_b.matched_pattern
-    
+
     return None
 
 
@@ -895,13 +950,15 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
         b_detail = d.channel_b.decision_detail if d.channel_b else "None"
         key = f"{a_patt}|{b_patt}|{b_detail}"
         groups.setdefault(key, []).append(d)
-    
+
     clusters = list(groups.values())
 
     for i, cluster in enumerate(clusters):
         detail = cluster[0]
         print(f"\n{'━' * BOX_WIDTH}")
-        print(f"  Reviewing Cluster {i + 1}/{len(clusters)} (Contains {len(cluster)} events)")
+        print(
+            f"  Reviewing Cluster {i + 1}/{len(clusters)} (Contains {len(cluster)} events)"
+        )
         print(f"{'━' * BOX_WIDTH}")
 
         render_disagreement(detail, verbose=True)
@@ -933,52 +990,58 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
             elif action_orig == "P" or action == "pattern-add-auto":
                 # Auto-generate pattern from the disagreement
                 detail.operator_action = OperatorAction.ADD_PATTERN_AUTO
-                
+
                 # Extract problematic text
                 problem_text = extract_problematic_text(detail)
-                
+
                 if problem_text:
                     # Generate regex and TOML patch
                     regex_pattern = generate_regex_from_text(problem_text)
                     toml_patch = generate_toml_patch(
-                        regex_pattern, 
+                        regex_pattern,
                         f"Operator-Review: FP #{detail.sequence}",
-                        detail.sequence
+                        detail.sequence,
                     )
-                    
+
                     print(f"\n  AUTO-GENERATED PATTERN:")
                     print(f"  Input Text:   {problem_text[:60]}")
                     print(f"  Regex:        {regex_pattern[:60]}")
                     print(f"  TOML Patch:")
                     print(toml_patch)
-                    
+
                     # Ask for confirmation or editing
-                    confirm = input("\n  Accept pattern? [y]es / [e]dit / [n]o: ").strip().lower()
-                    
+                    confirm = (
+                        input("\n  Accept pattern? [y]es / [e]dit / [n]o: ")
+                        .strip()
+                        .lower()
+                    )
+
                     if confirm == "y" or confirm == "":
                         detail.operator_notes = f"auto:{regex_pattern}"
                         print(f"  Pattern accepted")
-                        
+
                         # Auto-write to firewall.toml
                         write_ok = write_toml_patch(
                             regex_pattern,
                             f"Operator-Review: FP #{detail.sequence}",
-                            detail.sequence
+                            detail.sequence,
                         )
                         if write_ok:
                             print(f"  [AUTO] Pattern written to firewall.toml")
                         else:
-                            print(f"  [WARN] Failed to write to firewall.toml - pattern still recorded")
+                            print(
+                                f"  [WARN] Failed to write to firewall.toml - pattern still recorded"
+                            )
                     elif confirm == "e":
                         # Allow manual editing
                         new_pattern = input("  Enter custom pattern: ").strip()
                         detail.operator_notes = f"manual:{new_pattern}"
-                        
+
                         # Write custom pattern to TOML
                         write_ok = write_toml_patch(
                             new_pattern,
                             f"Operator-Review: FP #{detail.sequence}",
-                            detail.sequence
+                            detail.sequence,
                         )
                         if write_ok:
                             print(f"  [AUTO] Custom pattern written to firewall.toml")
@@ -1000,12 +1063,15 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
                     try:
                         from suggest_pattern import suggest_pattern, check_z3_snippet
                         import os
+
                         print("\n  [INFO] Running suggest_new_ip_pattern API...")
                         suggestion = suggest_pattern(
-                            audit_log_path="", 
+                            audit_log_path="",
                             positive_examples=[problem_text],
                             negative_examples=[],
-                            safety_constraints=["no restrictions"] # Example constraints
+                            safety_constraints=[
+                                "no restrictions"
+                            ],  # Example constraints
                         )
                         print(f"\n  SUGGESTED NEW IP PATTERN:")
                         print(f"  ID:          {suggestion.pattern_id}")
@@ -1013,58 +1079,78 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
                         print(f"  Needs Guard: {suggestion.needs_guard}")
                         print(f"  Z3 PO Update:\n{suggestion.z3_po_update}")
                         print(f"  Safety Manual:\n{suggestion.safety_manual_snippet}")
-                        
-                        smt_path = os.path.join(os.path.dirname(__file__), "channel_a.smt2")
+
+                        smt_path = os.path.join(
+                            os.path.dirname(__file__), "channel_a.smt2"
+                        )
                         z3_res = check_z3_snippet(smt_path, suggestion.z3_po_update)
                         print(f"  [Z3 DRY-RUN] {z3_res}")
-                        
-                        confirm = input("\n  Accept suggestion? [y]es / [n]o: ").strip().lower()
+
+                        confirm = (
+                            input("\n  Accept suggestion? [y]es / [n]o: ")
+                            .strip()
+                            .lower()
+                        )
                         if confirm in ("y", ""):
                             detail.operator_notes = f"suggest:{suggestion.regex}"
-                            
+
                             # ── Fuzz Check ──────────────────────────────────
                             print(f"  [FUZZ] Running bypass fuzzer on regex...")
                             try:
                                 from fuzz_regex import run_fuzz
+
                                 fuzz = run_fuzz(suggestion.regex, verbose=False)
                                 if fuzz.dangerous_count > 0:
-                                    print(f"  [FUZZ] ⚠  {fuzz.dangerous_count} DANGEROUS probes found!")
-                                    print(f"         Regex may be too permissive. Proceed anyway? [y/N]: ", end="")
+                                    print(
+                                        f"  [FUZZ] ⚠  {fuzz.dangerous_count} DANGEROUS probes found!"
+                                    )
+                                    print(
+                                        f"         Regex may be too permissive. Proceed anyway? [y/N]: ",
+                                        end="",
+                                    )
                                     override = input().strip().lower()
                                     if override != "y":
-                                        print("  Aborted. Refine the regex before accepting.")
+                                        print(
+                                            "  Aborted. Refine the regex before accepting."
+                                        )
                                         continue
                                 else:
-                                    print(f"  [FUZZ] ✅ 0 dangerous probes. Regex is safe to commit.")
+                                    print(
+                                        f"  [FUZZ] ✅ 0 dangerous probes. Regex is safe to commit."
+                                    )
                             except ImportError:
                                 print("  [FUZZ] Skipped (fuzz_regex.py not found)")
-                            
+
                             # Auto-write to firewall.toml
                             write_ok = write_toml_patch(
                                 suggestion.regex,
                                 f"Operator-Review: {suggestion.pattern_id} for Cluster",
-                                detail.sequence
+                                detail.sequence,
                             )
                             if write_ok:
                                 print(f"  [AUTO] Pattern written to firewall.toml")
-                                
+
                             # Patch Safety Manual
                             patch_safety_manual(suggestion.safety_manual_snippet)
                             print(f"  [AUTO] Safety Manual patched")
-                            
+
                             # Git Commit
-                            execute_git_commit(f"chore(firewall): Auto-add {suggestion.pattern_id} allowlist intent")
+                            execute_git_commit(
+                                f"chore(firewall): Auto-add {suggestion.pattern_id} allowlist intent"
+                            )
                             print(f"  [AUTO] Git commit executed")
-                            
+
                             # Trigger Hot-Reload
                             trigger_hot_reload()
-                            
+
                             print("  Suggestion fully integrated.")
                         else:
                             print("  Suggestion rejected, action cancelled")
                             continue
                     except ImportError:
-                        print("  [ERROR] Could not import suggest_pattern. Is it in the same directory?")
+                        print(
+                            "  [ERROR] Could not import suggest_pattern. Is it in the same directory?"
+                        )
                 else:
                     print("  [WARN] Could not extract text for suggestion")
                 break
@@ -1080,40 +1166,68 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
                 rule_id = detail.channel_b.matched_pattern or "UNKNOWN-RULE"
                 if problem_text:
                     try:
-                        from suggest_pattern import suggest_rule_exception, check_z3_snippet
+                        from suggest_pattern import (
+                            suggest_rule_exception,
+                            check_z3_snippet,
+                        )
                         import os
-                        print(f"\n  [INFO] Running suggest_rule_exception API for {rule_id}...")
+
+                        print(
+                            f"\n  [INFO] Running suggest_rule_exception API for {rule_id}..."
+                        )
                         suggestion = suggest_rule_exception(rule_id, problem_text)
-                        
+
                         print(f"\n  SUGGESTED RULE EXCEPTION:")
                         print(f"  Rule ID:         {suggestion.rule_id}")
                         print(f"  Exception Regex: {suggestion.exception_regex}")
                         print(f"  Rationale:       {suggestion.rationale}")
                         print(f"  Z3 PO Update:\n{suggestion.z3_po_update}")
                         print(f"  Safety Manual:\n{suggestion.safety_manual_snippet}")
-                        
-                        smt_path = os.path.join(os.path.dirname(__file__), "rule_engine.smt2")
+
+                        smt_path = os.path.join(
+                            os.path.dirname(__file__), "rule_engine.smt2"
+                        )
                         z3_res = check_z3_snippet(smt_path, suggestion.z3_po_update)
                         print(f"  [Z3 DRY-RUN] {z3_res}")
-                        
-                        confirm = input("\n  Accept suggestion? [y]es / [n]o: ").strip().lower()
+
+                        confirm = (
+                            input("\n  Accept suggestion? [y]es / [n]o: ")
+                            .strip()
+                            .lower()
+                        )
                         if confirm in ("y", ""):
-                            detail.operator_notes = f"exception_auto:{suggestion.exception_regex}"
-                            
+                            detail.operator_notes = (
+                                f"exception_auto:{suggestion.exception_regex}"
+                            )
+
                             # ── Fuzz Check ──────────────────────────────────
-                            print(f"  [FUZZ] Running bypass fuzzer on rule exception regex...")
+                            print(
+                                f"  [FUZZ] Running bypass fuzzer on rule exception regex..."
+                            )
                             try:
                                 from fuzz_regex import run_fuzz
-                                fuzz = run_fuzz(suggestion.exception_regex, verbose=False)
+
+                                fuzz = run_fuzz(
+                                    suggestion.exception_regex, verbose=False
+                                )
                                 if fuzz.dangerous_count > 0:
-                                    print(f"  [FUZZ] ⚠  {fuzz.dangerous_count} DANGEROUS probes found!")
-                                    print(f"         Regex may be too permissive. Proceed anyway? [y/N]: ", end="")
+                                    print(
+                                        f"  [FUZZ] ⚠  {fuzz.dangerous_count} DANGEROUS probes found!"
+                                    )
+                                    print(
+                                        f"         Regex may be too permissive. Proceed anyway? [y/N]: ",
+                                        end="",
+                                    )
                                     override = input().strip().lower()
                                     if override != "y":
-                                        print("  Aborted. Refine the exception regex before accepting.")
+                                        print(
+                                            "  Aborted. Refine the exception regex before accepting."
+                                        )
                                         continue
                                 else:
-                                    print(f"  [FUZZ] ✅ 0 dangerous probes. Regex is safe to commit.")
+                                    print(
+                                        f"  [FUZZ] ✅ 0 dangerous probes. Regex is safe to commit."
+                                    )
                             except ImportError:
                                 print("  [FUZZ] Skipped (fuzz_regex.py not found)")
 
@@ -1122,28 +1236,34 @@ def run_interactive(disagreements: list[DisagreementDetail], actions_log: list[d
                                 suggestion.rule_id,
                                 suggestion.exception_regex,
                                 f"Operator-Review: Rule Exception for Cluster",
-                                detail.sequence
+                                detail.sequence,
                             )
                             if write_ok:
-                                print(f"  [AUTO] Exception block appended to firewall.toml")
-                                
+                                print(
+                                    f"  [AUTO] Exception block appended to firewall.toml"
+                                )
+
                             # Patch Safety Manual
                             patch_safety_manual(suggestion.safety_manual_snippet)
                             print(f"  [AUTO] Safety Manual patched")
-                            
+
                             # Git Commit
-                            execute_git_commit(f"chore(firewall): Auto-tune {suggestion.rule_id} exception")
+                            execute_git_commit(
+                                f"chore(firewall): Auto-tune {suggestion.rule_id} exception"
+                            )
                             print(f"  [AUTO] Git commit executed")
-                            
+
                             # Trigger Hot-Reload
                             trigger_hot_reload()
-                            
+
                             print("  Exception fully integrated.")
                         else:
                             print("  Suggestion rejected, action cancelled")
                             continue
                     except ImportError:
-                        print("  [ERROR] Could not import suggest_pattern. Is it in the same directory?")
+                        print(
+                            "  [ERROR] Could not import suggest_pattern. Is it in the same directory?"
+                        )
                 else:
                     print("  [WARN] Could not extract text for exception suggestion")
                 break

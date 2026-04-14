@@ -20,92 +20,110 @@ pub struct StructuredScanResult {
     pub value_snippet: String,
 }
 
+/// Safely compile a regex pattern, logging errors instead of panicking.
+/// CVE-FIX: Returns Option instead of panicking on invalid regex.
+fn compile_pattern(pattern: &str, name: &'static str) -> Option<Regex> {
+    match Regex::new(pattern) {
+        Ok(re) => Some(re),
+        Err(e) => {
+            eprintln!("[WARN] Failed to compile {} regex pattern: {}. This PII pattern will be skipped.", name, e);
+            None
+        }
+    }
+}
+
 /// Scan JSON output for PII and secrets.
 #[allow(dead_code)]
 pub fn scan_json(text: &str) -> Option<StructuredScanResult> {
     // Extract field name — compiled once via OnceLock (outside loop)
-    static FIELD_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let field_re = FIELD_RE.get_or_init(|| Regex::new(r#""([^"]+)"\s*:"#).unwrap());
+    static FIELD_RE: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
+    let field_re_opt = FIELD_RE.get_or_init(|| {
+        compile_pattern(r#""([^"]+)"\s*:"#, "JSON field name")
+    });
+    
+    let field_re = field_re_opt.as_ref()?;
 
     let patterns = JSON_PII_PATTERNS.get_or_init(|| {
         vec![
             // Medical/Health data
             (
                 "MedicalRecordNumber",
-                Regex::new(r#"(?i)"(?:medical_record|mrn|patient_id|health_id)"\s*:\s*"[^"]{5,}""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:medical_record|mrn|patient_id|health_id)"\s*:\s*"[^"]{5,}""#, "MedicalRecordNumber JSON"),
             ),
             (
                 "DiagnosisCode",
-                Regex::new(r#"(?i)"(?:diagnosis|icd_code|icd10)"\s*:\s*"[A-Z]\d{2}(\.\w+)?""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:diagnosis|icd_code|icd10)"\s*:\s*"[A-Z]\d{2}(\.\w+)?""#, "DiagnosisCode JSON"),
             ),
             (
                 "Prescription",
-                Regex::new(r#"(?i)"(?:prescription|medication|drug_name)"\s*:\s*"[^"]{3,}""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:prescription|medication|drug_name)"\s*:\s*"[^"]{3,}""#, "Prescription JSON"),
             ),
             // Biometric data
             (
                 "Fingerprint",
-                Regex::new(r#"(?i)"(?:fingerprint|fingerprint_template|fp_hash)"\s*:\s*"[^"]{20,}""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:fingerprint|fingerprint_template|fp_hash)"\s*:\s*"[^"]{20,}""#, "Fingerprint JSON"),
             ),
             (
                 "FaceEmbedding",
-                Regex::new(r#"(?i)"(?:face_embedding|face_vector|facial_features)"\s*:\s*"\[[^\]]{50,}\]""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:face_embedding|face_vector|facial_features)"\s*:\s*"\[[^\]]{50,}\]""#, "FaceEmbedding JSON"),
             ),
             (
                 "IrisData",
-                Regex::new(r#"(?i)"(?:iris_code|iris_template|eye_pattern)"\s*:\s*"[^"]{50,}""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:iris_code|iris_template|eye_pattern)"\s*:\s*"[^"]{50,}""#, "IrisData JSON"),
             ),
             (
                 "VoicePrint",
-                Regex::new(r#"(?i)"(?:voice_print|voice_embedding|voice_template)"\s*:\s*"[^"]{50,}""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:voice_print|voice_embedding|voice_template)"\s*:\s*"[^"]{50,}""#, "VoicePrint JSON"),
             ),
             // Identity documents
             (
                 "PassportNumber",
-                Regex::new(r#"(?i)"(?:passport|passport_number|passport_no)"\s*:\s*"[A-Z0-9]{6,12}""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:passport|passport_number|passport_no)"\s*:\s*"[A-Z0-9]{6,12}""#, "PassportNumber JSON"),
             ),
             (
                 "DriversLicense",
-                Regex::new(r#"(?i)"(?:drivers_license|driver_license|dl_number|license_no)"\s*:\s*"[A-Z0-9]{5,15}""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:drivers_license|driver_license|dl_number|license_no)"\s*:\s*"[A-Z0-9]{5,15}""#, "DriversLicense JSON"),
             ),
             (
                 "NationalID",
-                Regex::new(r#"(?i)"(?:national_id|national_identifier|tax_id|sin|nin)"\s*:\s*"[A-Z0-9]{6,15}""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:national_id|national_identifier|tax_id|sin|nin)"\s*:\s*"[A-Z0-9]{6,15}""#, "NationalID JSON"),
             ),
             // Financial - extended
             (
                 "BankAccount",
-                Regex::new(r#"(?i)"(?:bank_account|account_number|iban|bic)"\s*:\s*"[A-Z0-9]{8,34}""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:bank_account|account_number|iban|bic)"\s*:\s*"[A-Z0-9]{8,34}""#, "BankAccount JSON"),
             ),
             (
                 "RoutingNumber",
-                Regex::new(r#"(?i)"(?:routing_number|aba|swift_code)"\s*:\s*"[A-Z0-9]{8,11}""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:routing_number|aba|swift_code)"\s*:\s*"[A-Z0-9]{8,11}""#, "RoutingNumber JSON"),
             ),
             // Secrets in JSON
             (
                 "PrivateKey",
-                Regex::new(r#"(?i)"(?:private_key|privatekey|priv_key)"\s*:\s*"[^"]{50,}""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:private_key|privatekey|priv_key)"\s*:\s*"[^"]{50,}""#, "PrivateKey JSON"),
             ),
             (
                 "DatabaseURL",
-                Regex::new(r#"(?i)"(?:database_url|db_url|db_connection_string)"\s*:\s*"[^"]{20,}""#).unwrap(),
+                compile_pattern(r#"(?i)"(?:database_url|db_url|db_connection_string)"\s*:\s*"[^"]{20,}""#, "DatabaseURL JSON"),
             ),
         ]
     });
 
-    for (name, pattern) in patterns {
-        if let Some(caps) = pattern.captures(text) {
-            let full_match = caps.get(0)?.as_str();
-            let field_match = field_re
-                .captures(full_match)?
-                .get(1)?
-                .as_str();
-            
-            return Some(StructuredScanResult {
-                data_type: name,
-                field_name: field_match.to_string(),
-                value_snippet: truncate_value(full_match, 50),
-            });
+    for (name, pattern_opt) in patterns {
+        if let Some(pattern) = pattern_opt {
+            if let Some(caps) = pattern.captures(text) {
+                let full_match = caps.get(0)?.as_str();
+                let field_match = field_re
+                    .captures(full_match)?
+                    .get(1)?
+                    .as_str();
+                
+                return Some(StructuredScanResult {
+                    data_type: name,
+                    field_name: field_match.to_string(),
+                    value_snippet: truncate_value(full_match, 50),
+                });
+            }
         }
     }
     None
@@ -115,67 +133,73 @@ pub fn scan_json(text: &str) -> Option<StructuredScanResult> {
 #[allow(dead_code)]
 pub fn scan_xml(text: &str) -> Option<StructuredScanResult> {
     // Extract tag name — compiled once via OnceLock (outside loop)
-    static TAG_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let tag_re = TAG_RE.get_or_init(|| Regex::new(r#"<([^\s>]+)"#).unwrap());
+    static TAG_RE: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
+    let tag_re_opt = TAG_RE.get_or_init(|| {
+        compile_pattern(r#"<([^\s>]+)"#, "XML tag name")
+    });
+    
+    let tag_re = tag_re_opt.as_ref()?;
 
     let patterns = XML_PII_PATTERNS.get_or_init(|| {
         vec![
             // Medical/Health data
             (
                 "MedicalRecordNumber",
-                Regex::new(r#"(?i)<(?:medical_record|mrn|patient_id|health_id)[^>]*>[^<]{5,}</"#).unwrap(),
+                compile_pattern(r#"(?i)<(?:medical_record|mrn|patient_id|health_id)[^>]*>[^<]{5,}</"#, "MedicalRecordNumber XML"),
             ),
             (
                 "DiagnosisCode",
-                Regex::new(r#"(?i)<(?:diagnosis|icd_code|icd10)[^>]*>[A-Z]\d{2}(?:\.\w+)?</"#).unwrap(),
+                compile_pattern(r#"(?i)<(?:diagnosis|icd_code|icd10)[^>]*>[A-Z]\d{2}(?:\.\w+)?</"#, "DiagnosisCode XML"),
             ),
             // Biometric data
             (
                 "Fingerprint",
-                Regex::new(r#"(?i)<(?:fingerprint|fingerprint_template|fp_hash)[^>]*>[^<]{20,}</"#).unwrap(),
+                compile_pattern(r#"(?i)<(?:fingerprint|fingerprint_template|fp_hash)[^>]*>[^<]{20,}</"#, "Fingerprint XML"),
             ),
             (
                 "FaceEmbedding",
-                Regex::new(r#"(?i)<(?:face_embedding|face_vector|facial_features)[^>]*>[^<]{50,}</"#).unwrap(),
+                compile_pattern(r#"(?i)<(?:face_embedding|face_vector|facial_features)[^>]*>[^<]{50,}</"#, "FaceEmbedding XML"),
             ),
             // Identity documents
             (
                 "PassportNumber",
-                Regex::new(r#"(?i)<(?:passport|passport_number|passport_no)[^>]*>[A-Z0-9]{6,12}</"#).unwrap(),
+                compile_pattern(r#"(?i)<(?:passport|passport_number|passport_no)[^>]*>[A-Z0-9]{6,12}</"#, "PassportNumber XML"),
             ),
             (
                 "DriversLicense",
-                Regex::new(r#"(?i)<(?:drivers_license|driver_license|dl_number)[^>]*>[A-Z0-9]{5,15}</"#).unwrap(),
+                compile_pattern(r#"(?i)<(?:drivers_license|driver_license|dl_number)[^>]*>[A-Z0-9]{5,15}</"#, "DriversLicense XML"),
             ),
             (
                 "NationalID",
-                Regex::new(r#"(?i)<(?:national_id|national_identifier|tax_id|sin|nin)[^>]*>[A-Z0-9]{6,15}</"#).unwrap(),
+                compile_pattern(r#"(?i)<(?:national_id|national_identifier|tax_id|sin|nin)[^>]*>[A-Z0-9]{6,15}</"#, "NationalID XML"),
             ),
             // Secrets in XML
             (
                 "PrivateKey",
-                Regex::new(r#"(?i)<(?:private_key|privatekey|priv_key)[^>]*>[^<]{50,}</"#).unwrap(),
+                compile_pattern(r#"(?i)<(?:private_key|privatekey|priv_key)[^>]*>[^<]{50,}</"#, "PrivateKey XML"),
             ),
             (
                 "APIKey",
-                Regex::new(r#"(?i)<(?:api_key|apikey|api_secret)[^>]*>[^<]{16,}</"#).unwrap(),
+                compile_pattern(r#"(?i)<(?:api_key|apikey|api_secret)[^>]*>[^<]{16,}</"#, "APIKey XML"),
             ),
         ]
     });
 
-    for (name, pattern) in patterns {
-        if let Some(caps) = pattern.captures(text) {
-            let full_match = caps.get(0)?.as_str();
-            let tag_match = tag_re
-                .captures(full_match)?
-                .get(1)?
-                .as_str();
-            
-            return Some(StructuredScanResult {
-                data_type: name,
-                field_name: tag_match.to_string(),
-                value_snippet: truncate_value(full_match, 50),
-            });
+    for (name, pattern_opt) in patterns {
+        if let Some(pattern) = pattern_opt {
+            if let Some(caps) = pattern.captures(text) {
+                let full_match = caps.get(0)?.as_str();
+                let tag_match = tag_re
+                    .captures(full_match)?
+                    .get(1)?
+                    .as_str();
+                
+                return Some(StructuredScanResult {
+                    data_type: name,
+                    field_name: tag_match.to_string(),
+                    value_snippet: truncate_value(full_match, 50),
+                });
+            }
         }
     }
     None
@@ -219,9 +243,9 @@ fn truncate_value(s: &str, max_len: usize) -> String {
 }
 
 #[allow(dead_code)]
-static JSON_PII_PATTERNS: OnceLock<Vec<(&'static str, Regex)>> = OnceLock::new();
+static JSON_PII_PATTERNS: OnceLock<Vec<(&'static str, Option<Regex>)>> = OnceLock::new();
 #[allow(dead_code)]
-static XML_PII_PATTERNS: OnceLock<Vec<(&'static str, Regex)>> = OnceLock::new();
+static XML_PII_PATTERNS: OnceLock<Vec<(&'static str, Option<Regex>)>> = OnceLock::new();
 
 #[cfg(test)]
 mod tests {

@@ -3,39 +3,28 @@ use std::sync::OnceLock;
 
 static HMAC_KEY: OnceLock<[u8; 32]> = OnceLock::new();
 static LAST_AUDIT_HMAC: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static HMAC_KEY_PATH: &str = "audit_hmac_key.seal";
 static CHAIN_SEAL_PATH: &str = "audit_chain.seal";
 
-pub(crate) fn init_audit() {
-    let _ = HMAC_KEY.get_or_init(|| {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if let Ok(key_str) = std::env::var("POLICY_GATE_HMAC_KEY") {
-                if let Ok(key_bytes) = hex::decode(&key_str) {
-                    if key_bytes.len() == 32 {
-                        let mut key = [0u8; 32];
-                        key.copy_from_slice(&key_bytes);
-                        return key;
-                    }
-                }
-            }
-
-            use getrandom::getrandom;
-            let mut key = [0u8; 32];
-            // SA-082: Fail-closed on RNG failure - without cryptographically secure key, audit chain is compromised
-            getrandom(&mut key).expect("FATAL: Could not generate HMAC key via getrandom. Audit chain integrity requires cryptographically secure randomness.");
-
-            if let Err(e) = std::fs::write(CHAIN_SEAL_PATH, hex::encode(key)) {
-                eprintln!("Warning: Could not save HMAC key: {}", e);
-            }
-            key
+pub(crate) fn init_audit() -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if HMAC_KEY.get().is_none() {
+            let key = load_or_generate_hmac_key()?;
+            HMAC_KEY
+                .set(key)
+                .map_err(|_| "audit HMAC key was already initialised".to_string())?;
         }
-        #[cfg(target_arch = "wasm32")]
-        {
-            // SA-083: WASM environments MUST inject HMAC key via host or panic
-            // Using a static key would break audit chain security across deployments
-            panic!("FATAL: HMAC key must be injected in WASM environments via host ABI. Static keys compromise audit chain integrity.");
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        if HMAC_KEY.get().is_none() {
+            return Err(
+                "WASM audit HMAC key is not set. Call set_wasm_hmac_key() before init().".into(),
+            );
         }
-    });
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -54,10 +43,17 @@ pub(crate) fn init_audit() {
             }
         }
     }
+
+    Ok(())
 }
 
 pub(crate) fn attach_chain_hmac(entry: &mut AuditEntry) {
-    if let (Some(key), Ok(mut last_hmac_guard)) = (HMAC_KEY.get(), LAST_AUDIT_HMAC.lock()) {
+    if let Some(key) = HMAC_KEY.get() {
+        let mut last_hmac_guard = match LAST_AUDIT_HMAC.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        
         let prev_hmac = last_hmac_guard.clone();
         let current_hmac = compute_audit_hmac(key, entry, prev_hmac.as_deref());
         entry.chain_hmac = Some(current_hmac.clone());
@@ -65,8 +61,10 @@ pub(crate) fn attach_chain_hmac(entry: &mut AuditEntry) {
         
         #[cfg(not(target_arch = "wasm32"))]
         if let Err(e) = std::fs::write(CHAIN_SEAL_PATH, &current_hmac) {
-            eprintln!("Warning: Could not write chain seal: {}", e);
+            eprintln!("[audit] Warning: Could not persist chain seal: {}", e);
         }
+    } else {
+        eprintln!("[audit] ERROR: attach_chain_hmac called before audit key initialisation");
     }
 }
 
@@ -108,4 +106,56 @@ pub(crate) fn sha256_hex(input: &str) -> String {
     use aws_lc_rs::digest;
     let digest = digest::digest(&digest::SHA256, input.as_bytes());
     hex::encode(digest.as_ref())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_or_generate_hmac_key() -> Result<[u8; 32], String> {
+    if let Ok(key_str) = std::env::var("POLICY_GATE_HMAC_KEY") {
+        return parse_hmac_key_hex(&key_str);
+    }
+
+    if let Ok(sealed_key) = std::fs::read_to_string(HMAC_KEY_PATH) {
+        return parse_hmac_key_hex(sealed_key.trim());
+    }
+
+    use getrandom::getrandom;
+    let mut key = [0u8; 32];
+    getrandom(&mut key).map_err(|e| {
+        format!(
+            "could not generate audit HMAC key via getrandom: {}. Refusing to start without audit integrity.",
+            e
+        )
+    })?;
+
+    std::fs::write(HMAC_KEY_PATH, hex::encode(key)).map_err(|e| {
+        format!(
+            "could not persist audit HMAC key to {}: {}",
+            HMAC_KEY_PATH, e
+        )
+    })?;
+
+    Ok(key)
+}
+
+fn parse_hmac_key_hex(input: &str) -> Result<[u8; 32], String> {
+    let key_bytes = hex::decode(input)
+        .map_err(|e| format!("invalid POLICY_GATE_HMAC_KEY / sealed HMAC key hex: {}", e))?;
+    if key_bytes.len() != 32 {
+        return Err(format!(
+            "invalid HMAC key length: expected 32 bytes, got {} bytes",
+            key_bytes.len()
+        ));
+    }
+
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&key_bytes);
+    Ok(key)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn set_wasm_hmac_key(key_hex: &str) -> Result<(), String> {
+    let key = parse_hmac_key_hex(key_hex)?;
+    HMAC_KEY
+        .set(key)
+        .map_err(|_| "WASM audit HMAC key is already initialised".to_string())
 }

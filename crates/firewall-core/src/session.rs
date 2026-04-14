@@ -93,7 +93,7 @@ impl SessionManager {
             .unwrap_or(Duration::ZERO)
             .as_nanos();
 
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         
         // Get or create session
         let session = sessions.entry(session_id.to_string()).or_insert_with(|| SessionContext {
@@ -231,7 +231,7 @@ impl SessionManager {
 
     /// Get current analysis for a session.
     pub fn get_analysis(&self, session_id: &str) -> Option<SessionAnalysis> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(session) = sessions.get(session_id) {
             if let Some(last_message) = session.messages.last() {
                 return Some(self.generate_analysis(session, last_message));
@@ -247,7 +247,7 @@ impl SessionManager {
             .unwrap_or(Duration::ZERO)
             .as_nanos();
 
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.retain(|_, session| {
             now - session.last_activity_ns < self.session_timeout_ns
         });
@@ -255,7 +255,7 @@ impl SessionManager {
 
     /// Get session statistics for monitoring.
     pub fn get_stats(&self) -> SessionStats {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let total_sessions = sessions.len();
         let active_sessions = sessions.values()
             .filter(|s| s.escalation_score > 0)

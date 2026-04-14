@@ -34,19 +34,22 @@
 mod streaming;
 
 use axum::{
+    extract::ConnectInfo,
     extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use metrics::counter;
+use metrics::{counter, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use reqwest::Client;
-use serde_json::json;
+use reqwest::{Client, header::HeaderMap};
+use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
+use firewall_core::{PromptInput, evaluate_for_tenant, evaluate_output_for_tenant, next_sequence};
 use tokio::net::TcpListener;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
@@ -60,11 +63,13 @@ use firewall_core::{
 pub(crate) struct AppState {
     pub(crate) http_client: reqwest::Client,
     pub(crate) upstream_url: String,
+    #[cfg(feature = "streaming-egress")]
     pub(crate) api_key: String,
     metrics_handle: PrometheusHandle,
 }
 
 /// Minimal typed request model to avoid untyped Value indexing.
+#[cfg(feature = "streaming-egress")]
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub(crate) struct ChatCompletionRequest {
     pub(crate) messages: Vec<serde_json::Value>,
@@ -108,10 +113,23 @@ async fn main() {
         .expect("PORT must be a valid port number");
 
     // Hot-reload: background task that polls firewall.toml for changes
-    let reload_interval_secs: u64 = std::env::var("CONFIG_RELOAD_INTERVAL_SECS")
-        .unwrap_or_else(|_| "30".to_string())
-        .parse()
-        .unwrap_or(30);
+    let reload_interval_secs: u64 = {
+        let val = std::env::var("CONFIG_RELOAD_INTERVAL_SECS")
+            .unwrap_or_else(|_| "30".to_string())
+            .parse::<u64>()
+            .unwrap_or(30);
+        
+        // Validate range: minimum 1s, maximum 3600s (1 hour)
+        if val == 0 {
+            error!("CONFIG_RELOAD_INTERVAL_SECS must be > 0, got 0. Using default 30s.");
+            30
+        } else if val > 3600 {
+            warn!("CONFIG_RELOAD_INTERVAL_SECS {} exceeds max of 3600s. Using 3600s.", val);
+            3600
+        } else {
+            val
+        }
+    };
 
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(reload_interval_secs));
@@ -122,12 +140,11 @@ async fn main() {
         }
     });
 
-    let api_key = std::env::var("UPSTREAM_API_KEY").unwrap_or_default();
-
     let state = Arc::new(AppState {
         http_client: Client::new(),
         upstream_url,
-        api_key,
+        #[cfg(feature = "streaming-egress")]
+        api_key: std::env::var("UPSTREAM_API_KEY").unwrap_or_default(),
         metrics_handle,
     });
 
@@ -145,11 +162,23 @@ async fn main() {
         .layer(DefaultBodyLimit::max(1024 * 1024 * 10)) // 10 MB
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    info!("Proxy listening on {}", addr);
+    // Restrict LLM API to all interfaces, but keep admin endpoints on localhost only
+    let api_addr = SocketAddr::from(([0, 0, 0, 0], port));
+    info!("Proxy listening on {}", api_addr);
     info!("Config hot-reload every {}s | POST /reload for immediate reload", reload_interval_secs);
-    let listener = TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    
+    let listener = match TcpListener::bind(&api_addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            error!("Failed to bind to {}: {}. Is port {} already in use?", api_addr, e, port);
+            std::process::exit(1);
+        }
+    };
+    
+    if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await {
+        error!("Server error: {}", e);
+        std::process::exit(1);
+    }
 }
 
 // ─── Request handler ──────────────────────────────────────────────────────────
@@ -195,7 +224,7 @@ async fn handle_chat_completion(
     }
 
     // 3. Build PromptInput (NFKC normalisation + size check)
-    let prompt_input = match PromptInput::new(&combined_messages) {
+    let mut prompt_input = match PromptInput::new(&combined_messages) {
         Ok(pi) => pi,
         Err(block_reason) => {
             warn!("Ingress blocked (malformed input): {:?}", block_reason);
@@ -213,7 +242,7 @@ async fn handle_chat_completion(
         tenant_id.unwrap_or("anonymous")
     );
     let sequence = next_sequence();
-    let verdict = evaluate_for_tenant(prompt_input.clone(), sequence, tenant_id);
+    let verdict = evaluate_for_tenant(&mut prompt_input, sequence, tenant_id);
 
     if !verdict.is_pass() {
         let reason = verdict
@@ -359,7 +388,14 @@ fn blocked_response(error_type: &str, details: &str) -> Response {
 }
 
 /// Serve Prometheus metrics in text exposition format.
-async fn metrics_handler(State(state): State<Arc<AppState>>) -> Response {
+async fn metrics_handler(
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    if !remote_addr.ip().is_loopback() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     let body = state.metrics_handle.render();
     (StatusCode::OK, [( "content-type", "text/plain; version=0.0.4")], body).into_response()
 }
@@ -387,7 +423,11 @@ fn run_reload() {
 ///
 /// Returns 200 if the config was reloaded or was already up-to-date.
 /// Returns 500 if the new config was invalid (old config remains active).
-async fn reload_handler() -> Response {
+async fn reload_handler(ConnectInfo(remote_addr): ConnectInfo<SocketAddr>) -> Response {
+    if !remote_addr.ip().is_loopback() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     match try_reload_config() {
         Ok(true) => {
             info!("Manual reload via POST /reload — new config active.");

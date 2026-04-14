@@ -3,7 +3,7 @@
 ## Safety-Oriented Architecture Documentation
 
 **Document ID:** PF-SM-001
-**Revision:** 2.27
+**Revision:** 2.28
 **Status:** Under development — not certified — not for production use
 **Design target:** Deterministic, fail-closed prompt gate for narrow LLM workflows
 
@@ -21,6 +21,7 @@ Recent revisions:
 
 | Rev  | Date    | Current relevance |
 | ---- | ------- | ----------------- |
+| 2.28 | 2026-04 | **Post-audit hardening alignment**: Audit initialization now fails closed if HMAC integrity cannot be established. WASM hosts must inject the audit HMAC key before init. Persistent audit key material and chain-seal state are stored separately (`audit_hmac_key.seal` and `audit_chain.seal`). Proxy admin routes (`/metrics`, `/reload`) are restricted to loopback callers. Node/TS sequence transport standardized on decimal-string over N-API with `bigint` in the wrapper. |
 | 2.27 | 2026-04 | **Fast-Semantic 2.0 Expansion**: Increased to 8 centroids (added `PhishingAids` and `DependencyConfusion`). Calibrated default `semantic_threshold` to 0.60 for improved recall. **API Hardening**: Enforced mutable borrowing for `PromptInput` to ensure stateful persistence of matched intents and normalization state. |
 | 2.26 | 2026-04 | **SA-080: Contextual Anchor Validation**: Hardened intent-persistence across the ingress-egress boundary. Ingress matched intent now determines the `EgressAnchor` (e.g. `TaskTranslation` -> `TextOnly`). Updated Channel F to block code fragments in text-only contexts. |
 | 2.25 | 2026-04 | Pillar 6 Streaming Egress (SA-079): Added experimental `streaming-egress` feature. Introduces Aho-Corasick overlap-buffer scanning across SSE chunks. Added H-19 (Streaming egress payload fragment), SR-024 (Aho-Corasick 256-byte overlap), and OC-13 (Pattern anchor length validation). |
@@ -716,38 +717,37 @@ Channel D (Semantic/Embeddings) uses a lightweight static subword-embedding path
 
 The audit chain uses HMAC-SHA256 chaining to prevent retrospective tampering. Each entry's `chain_hmac` is computed from the entry content and the previous entry's HMAC.
 
-**Problem (Pre-SA-075):** The original implementation stored the HMAC key in `OnceLock<[u8; 32]>` — process memory only. On process restart, a new random key was generated, breaking chain continuity. Two logs from different process lifetimes could not be cryptographically linked.
+**Current Design:** Audit integrity is established during initialization or startup fails closed. The HMAC key and the last-chain seal are distinct persisted artifacts.
 
 **Safety Action SA-075:** Persistent Key + Chain Sealing
 
 | Mechanism | Implementation | Purpose |
 |-----------|----------------|---------|
-| **HMAC_KEY** | `POLICY_GATE_HMAC_KEY` env var (hex, 32 bytes) or auto-generated | Deterministic key across restarts |
+| **HMAC_KEY** | `POLICY_GATE_HMAC_KEY` env var (hex, 32 bytes) or `audit_hmac_key.seal` | Deterministic key across restarts |
 | **CHAIN_SEAL** | `audit_chain.seal` file | Stores last HMAC for chain continuity |
-| **Init Load** | Read seal file at startup | Continue chain from previous process |
-| **Audit Write** | Update seal file after each entry | Enable next restart to link |
+| **Init Load** | Read persisted key + previous seal at startup | Re-establish audit continuity |
+| **Audit Write** | Update chain seal after each entry | Enable next restart to link |
+| **WASM Injection** | `set_wasm_hmac_key(...)` before `init()` | Explicit host-managed key setup for WASM |
 
 **Implementation:**
 ```rust
-// At process restart: Load previous HMAC from seal
-if let Ok(seal) = std::fs::read_to_string(CHAIN_SEAL_PATH) {
-    *LAST_AUDIT_HMAC.lock().unwrap() = Some(seal);
-}
+let key = load_or_generate_hmac_key()?;
+HMAC_KEY.set(key)?;
 
-// After each audit: Write new HMAC to seal
-fn chain_seal(key, entry, prev_hmac) -> String {
-    let new_hmac = compute_hmac(key, entry, prev_hmac);
-    std::fs::write(CHAIN_SEAL_PATH, &new_hmac)?;
-    new_hmac
+if let Ok(seal) = std::fs::read_to_string(CHAIN_SEAL_PATH) {
+    *LAST_AUDIT_HMAC.lock().unwrap() = Some(seal.trim().to_string());
 }
 ```
 
 **Deployment:**
-- **Development:** Auto-generated key, saved to seal file
+- **Development:** Auto-generated key persisted to `audit_hmac_key.seal`
 - **Production:** Set `POLICY_GATE_HMAC_KEY` for deterministic key across restarts
+- **WASM / Edge:** Host must call `set_wasm_hmac_key(...)` before `init()`
 - **Rotation:** Change env var → new chain segment; old logs still verifiable with old key
 
-**Incident Response:** Audit logs from multiple process restarts now form a single continuous cryptographic chain. The seal file provides the linking HMAC across restart boundaries.
+**Failure Mode:** If key generation, key parsing, or required WASM key injection fails, initialization returns `Err` and the firewall does not enter service.
+
+**Incident Response:** Audit logs from multiple process restarts form a continuous cryptographic chain when the same HMAC key is retained. The persisted chain-seal provides the linking HMAC across restart boundaries.
 
 ### 7.7 Session-Aware-Layer (SA-076) — Multi-Turn Conversation Memory
 

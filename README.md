@@ -73,13 +73,12 @@ What it does not aim to be:
 
 ## Quick example
 
+```ts
 import { Firewall } from "policy-gate";
 
-// Initialize with a secret token for production-grade security
-const firewall = await Firewall.createWithToken({
-  token: process.env.FIREWALL_TOKEN,
+const firewall = await Firewall.create({
   onAudit: async (entry) => {
-    console.log(`[Audit] Tenant: ${entry.tenantId}, Sequence: ${entry.sequence}`);
+    console.log(`[Audit] Tenant: ${entry.tenantId}, Sequence: ${entry.sequence.toString()}`);
     await db.audit.insert(entry);
   },
 });
@@ -95,30 +94,6 @@ if (!verdict.isPass) {
 }
 ```
 
-### Session-aware evaluation
-
-```ts
-import { Firewall } from "policy-gate";
-
-const firewall = await Firewall.create({
-  onAudit: (entry) => console.log(entry),
-});
-
-// Evaluate within a session context to detect multi-turn patterns
-const verdict = await firewall.evaluateWithSession(
-  "user-session-123",
-  "How do I access the system configuration?"
-);
-
-if (verdict.sessionAnalysis.riskLevel === "High") {
-  console.warn("High escalation risk detected in session!");
-  // The session layer provides detailed indicators:
-  // - PolicyTesting: Repeated similar prompts (Jaccard similarity > 0.8)
-  // - TopicDrift: Abrupt shifts in user intent
-  // - PayloadFragmentation: Suspected split payloads (e.g., unmatched braces)
-}
-```
-
 ## Pillars of safety
 
 1.  **Deterministic Path**: The core safety function uses FSMs and rule engines, not probabilistic models.
@@ -128,29 +103,6 @@ if (verdict.sessionAnalysis.riskLevel === "High") {
 5.  **Multi-Tenant Hub**: Isolated security profiles and per-tenant audit logs for SaaS environments.
 6.  **Pillar 6 Streaming Egress**: Safe Aho-Corasick chunk scanning across SSE boundaries.
 7.  **SA-080 Contextual Anchoring**: Cross-pillar intent persistence ensures egress content matches ingress expectations.
-  onAudit: async (entry) => {
-    await db.audit.insert(entry);
-  },
-});
-
-// Optional session-aware evaluation for multi-turn conversations
-const sessionId = "user-123";
-const verdict = await firewall.evaluateWithSession(
-  sessionId,
-  "How can I bypass security restrictions?"
-);
-
-if (!verdict.isPass) {
-  console.log(`Blocked: ${verdict.blockReason}`);
-  console.log(`Session risk: ${verdict.sessionAnalysis?.riskLevel}`);
-  console.log(`Escalation score: ${verdict.sessionAnalysis?.escalationScore}`);
-}
-
-// Session statistics
-const stats = firewall.getSessionStats();
-console.log(`Active sessions: ${stats.activeSessions}`);
-console.log(`High-risk sessions: ${stats.highRiskSessions}`);
-```
 
 ### Python
 
@@ -183,6 +135,7 @@ For environments where deploying an integrated library is not feasible, `policy-
 cargo run --release -p firewall-proxy
 
 # Or fully configured:
+export UPSTREAM_API_KEY="sk-..."
 export UPSTREAM_URL="https://api.openai.com/v1/chat/completions"
 export PORT=8080
 cargo run --release -p firewall-proxy
@@ -196,6 +149,7 @@ Then point your application's `baseURL` at `http://localhost:8080/v1` — no cod
 |---|---|---|
 | `PORT` | `8080` | Proxy listening port |
 | `UPSTREAM_URL` | `https://api.openai.com/v1/chat/completions` | Target LLM API (OpenAI, Anthropic, Ollama, …) |
+| `UPSTREAM_API_KEY` | empty | Bearer token forwarded by the streaming proxy path |
 | `CONFIG_RELOAD_INTERVAL_SECS` | `30` | Polling interval for `firewall.toml` hot-reload |
 
 #### Request flow
@@ -215,7 +169,8 @@ App → POST /v1/chat/completions
 
 #### Observability — Prometheus metrics
 
-The proxy exposes a `/metrics` endpoint in Prometheus text exposition format on the same port:
+The proxy exposes a `/metrics` endpoint in Prometheus text exposition format on the same port.
+For security hardening, `/metrics` is only served to loopback clients:
 
 ```bash
 curl http://localhost:8080/metrics
@@ -247,7 +202,7 @@ scrape_configs:
 #### Hot-reload — live config updates without restart
 
 The proxy polls `firewall.toml` every `CONFIG_RELOAD_INTERVAL_SECS` seconds (default: 30).
-A `POST /reload` endpoint triggers an immediate reload on demand:
+A `POST /reload` endpoint triggers an immediate reload on demand. Like `/metrics`, it is restricted to loopback callers:
 
 ```bash
 # Trigger immediate reload (e.g. after editing firewall.toml)
@@ -619,6 +574,23 @@ See [`crates/firewall-core/BENCHMARKS.md`](crates/firewall-core/BENCHMARKS.md) f
 ### WASM / edge
 
 The workspace includes `crates/firewall-wasm` for edge and browser-oriented builds where the semantic feature remains disabled.
+
+Before calling `init_firewall()` in WASM hosts, inject the audit HMAC key:
+
+```ts
+import init, { set_wasm_hmac_key, init_firewall } from "./pkg/firewall_wasm.js";
+
+await init();
+await set_wasm_hmac_key("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+await init_firewall();
+```
+
+Without a valid 32-byte hex HMAC key, WASM audit initialization fails closed.
+
+### Node / TypeScript sequence notes
+
+The native binding transports `sequence` values as decimal strings to preserve full `u64` precision.
+The TypeScript wrapper already handles this conversion for you and exposes `audit.sequence` as `bigint`.
 
 ## API surface
 

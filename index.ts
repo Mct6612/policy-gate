@@ -57,7 +57,7 @@ export interface ChannelResult {
 }
 
 export interface AuditEntry {
-  sequence: number;
+  sequence: bigint;
   ingestedAtNs: bigint;
   decidedAtNs: bigint;
   totalElapsedUs: number;
@@ -161,7 +161,7 @@ export class Firewall {
    * @returns     Verdict — check isPass before forwarding to LLM
    */
   async evaluate(text: string, role?: string): Promise<Verdict> {
-    const seq = Number(this.sequence++);
+    const seq = (this.sequence++).toString();
 
     // All evaluation happens in the Rust core (off the event loop via napi-rs worker thread)
     const rawVerdict = await this.native.evaluate({ text, role: role ?? undefined, sequence: seq });
@@ -195,7 +195,7 @@ export class Firewall {
    * @returns        Verdict
    */
   async evaluateForTenant(tenantId: string, text: string, role?: string): Promise<Verdict> {
-    const seq = Number(this.sequence++);
+    const seq = (this.sequence++).toString();
     const rawVerdict = await this.native.evaluateForTenant({ text, role: role ?? undefined, sequence: seq }, tenantId);
     const verdict = mapVerdict(rawVerdict);
 
@@ -221,7 +221,7 @@ export class Firewall {
    * Evaluate a multi-message conversation with the core sliding-window checks.
    */
   async evaluateMessages(messages: ChatMessage[]): Promise<ConversationVerdict> {
-    const baseSequence = Number(this.sequence);
+    const baseSequence = this.sequence.toString();
     this.sequence += BigInt(messages.length);
 
     const rawConversation = await this.native.evaluateMessages(messages, baseSequence);
@@ -256,7 +256,7 @@ export class Firewall {
    * Evaluate an LLM response against the original prompt to detect leakage/PII.
    */
   async evaluateOutput(prompt: string, response: string): Promise<EgressVerdict> {
-    const seq = Number(this.sequence++);
+    const seq = (this.sequence++).toString();
     const raw = await this.native.evaluateOutput(prompt, response, seq);
     return {
       kind: raw.kind,
@@ -264,7 +264,7 @@ export class Firewall {
       egressReason: raw.egressReason || undefined,
       audit: raw.inputHash
         ? {
-            sequence: raw.sequence,
+            sequence: BigInt(raw.sequence),
             inputHash: raw.inputHash,
           }
         : undefined,
@@ -293,10 +293,10 @@ export class FirewallEvaluationError extends Error {
 interface NativeFirewall {
   init(): string | null;
   initMultiTenantRegistry(token: string, dirPath: string): string | null;
-  evaluate(input: { text: string; role?: string; sequence: number }): Promise<RawVerdict>;
-  evaluateForTenant(input: { text: string; role?: string; sequence: number }, tenantId: string): Promise<RawVerdict>;
-  evaluateMessages(messages: ChatMessage[], baseSequence: number): Promise<RawConversationVerdict>;
-  evaluateOutput(prompt: string, response: string, sequence: number): Promise<RawEgressVerdict>;
+  evaluate(input: { text: string; role?: string; sequence: string }): Promise<RawVerdict>;
+  evaluateForTenant(input: { text: string; role?: string; sequence: string }, tenantId: string): Promise<RawVerdict>;
+  evaluateMessages(messages: ChatMessage[], baseSequence: string): Promise<RawConversationVerdict>;
+  evaluateOutput(prompt: string, response: string, sequence: string): Promise<RawEgressVerdict>;
 }
 
 interface RawVerdict {
@@ -307,11 +307,11 @@ interface RawVerdict {
   channelBDecision?: string;
   elapsedUs?: number;
   inputHash?: string;
-  sequence?: number;
+  sequence?: string;
   tenantId?: string;
   blockReason?: string;
   audit?: {
-    sequence: number;
+    sequence: string;
     ingestedAtNs: bigint;
     decidedAtNs: bigint;
     totalElapsedUs: number;
@@ -332,7 +332,7 @@ interface RawEgressVerdict {
   isPass: boolean;
   egressReason: string;
   inputHash: string;
-  sequence: number;
+  sequence: string;
 }
 
 async function loadNative(): Promise<NativeFirewall> {
@@ -356,15 +356,20 @@ async function loadNative(): Promise<NativeFirewall> {
 }
 
 function mapVerdict(raw: RawVerdict): Verdict {
-  const audit = raw.audit ?? {
-    sequence: raw.sequence ?? 0,
-    ingestedAtNs: 0n,
-    decidedAtNs: 0n,
-    totalElapsedUs: raw.elapsedUs ?? 0,
-    verdictKind: raw.kind,
-    inputHash: raw.inputHash ?? '',
-    tenantId: raw.tenantId ?? 'default',
-  };
+  const audit = raw.audit
+    ? {
+        ...raw.audit,
+        sequence: BigInt(raw.audit.sequence),
+      }
+    : {
+        sequence: BigInt(raw.sequence ?? '0'),
+        ingestedAtNs: 0n,
+        decidedAtNs: 0n,
+        totalElapsedUs: raw.elapsedUs ?? 0,
+        verdictKind: raw.kind,
+        inputHash: raw.inputHash ?? '',
+        tenantId: raw.tenantId ?? 'default',
+      };
   const channelA = raw.channelA ?? parseStableChannelDecision('A', raw.channelADecision ?? 'Fault:InternalPanic', raw.elapsedUs ?? audit.totalElapsedUs, raw.blockReason);
   const channelB = raw.channelB ?? parseStableChannelDecision('B', raw.channelBDecision ?? 'Fault:InternalPanic', raw.elapsedUs ?? audit.totalElapsedUs, raw.blockReason);
 
@@ -434,6 +439,10 @@ function parseStableBlockReason(value: string): BlockReason {
       return { type: 'ForbiddenPattern', patternId: payload };
     case 'MalformedInput':
       return { type: 'MalformedInput', detail: payload };
+    case 'UnknownTenant':
+      return { type: 'MalformedInput', detail: 'UnknownTenant' };
+    case 'AnchorViolation':
+      return { type: 'MalformedInput', detail: `AnchorViolation:${payload}` };
     case 'ExceededMaxLength':
       return { type: 'ExceededMaxLength' };
     case 'WatchdogTimeout':
@@ -467,6 +476,7 @@ function formatBlockReasonFromDecision(decision: ChannelResult['decision']): str
 function devStub(): NativeFirewall {
   return {
     init: () => null,
+    initMultiTenantRegistry: () => null,
     evaluate: async (input) => {
       const passPatterns = [/\?$/, /^(hi|hello|hey)/i, /\b(write|create|generate)\b.*\b(function|code)\b/i];
       const isPass = passPatterns.some(p => p.test(input.text));
@@ -494,7 +504,18 @@ function devStub(): NativeFirewall {
           totalElapsedUs: 20,
           verdictKind: isPass ? 'Pass' : 'Block',
           inputHash: `stub-${input.text.length}`,
+          tenantId: 'default',
         },
+      };
+    },
+    evaluateForTenant: async (input, tenantId) => {
+      const verdict = await devStub().evaluate(input);
+      if (verdict.audit) {
+        verdict.audit.tenantId = tenantId;
+      }
+      return {
+        ...verdict,
+        tenantId,
       };
     },
     evaluateMessages: async (messages, baseSequence) => {
@@ -503,7 +524,7 @@ function devStub(): NativeFirewall {
           devStub().evaluate({
             text: message.content,
             role: message.role,
-            sequence: baseSequence + index,
+            sequence: (BigInt(baseSequence) + BigInt(index)).toString(),
           }),
         ),
       );

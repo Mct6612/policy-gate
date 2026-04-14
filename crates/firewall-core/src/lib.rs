@@ -135,6 +135,20 @@ pub fn init() -> Result<(), FirewallInitError> {
     Ok(())
 }
 
+/// Inject the audit HMAC key for WASM hosts before calling `init()`.
+pub fn set_wasm_hmac_key(key_hex: &str) -> Result<(), String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return audit::set_wasm_hmac_key(key_hex);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = key_hex;
+        Err("set_wasm_hmac_key is only available on wasm32 targets".into())
+    }
+}
+
 /// Initialise the firewall with a specific deployment profile.
 ///
 /// Deprecated compatibility API. New callers should use `init_with_token()`.
