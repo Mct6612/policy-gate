@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use firewall_core::{evaluate_raw, init, init_with_token, config::FirewallConfig};
+use firewall_core::{config::FirewallConfig, evaluate_raw, init, init_with_token};
 use std::io::{self, BufRead};
 use std::path::PathBuf;
 
@@ -48,7 +48,7 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Eval { config: _ } => {
+        Commands::Eval { config } => {
             // SA-077: Write PID file for hot-reload triggering from Python.
             let pid_path = std::path::Path::new("/tmp/policy-gate.pid");
             if let Some(parent) = pid_path.parent() {
@@ -56,8 +56,20 @@ fn main() {
             }
             let _ = std::fs::write(pid_path, std::process::id().to_string());
 
+            // Warn if --config was supplied but cannot yet be honoured.
+            if let Some(ref path) = config {
+                eprintln!(
+                    "[WARN] --config flag provided ({}) but not yet supported in eval mode; \
+                     using default firewall.toml",
+                    path.display()
+                );
+            }
+
             // For now, eval still uses standard init() which loads firewall.toml.
-            init().expect("firewall init failed");
+            if let Err(e) = init() {
+                eprintln!("[ERROR] Firewall init failed: {}", e);
+                std::process::exit(1);
+            }
 
             let stdin = io::stdin();
             for (i, line) in stdin.lock().lines().enumerate() {
@@ -77,29 +89,47 @@ fn main() {
             }
         }
         Commands::Diff { path_a, path_b } => {
-            let cfg_a = FirewallConfig::load_from_path(&path_a).expect("Failed to load config A");
-            let cfg_b = FirewallConfig::load_from_path(&path_b).expect("Failed to load config B");
-            diff::display_diff(&cfg_a, &cfg_b);
-        }
-        Commands::Validate { path } => {
-            match FirewallConfig::load_from_path(&path) {
-                Ok(cfg) => {
-                    if let Err(errors) = cfg.validate() {
-                        eprintln!("Validation failed for {}:", path.display());
-                        for err in errors {
-                            eprintln!("  - {}", err);
-                        }
-                        std::process::exit(1);
-                    } else {
-                        println!("Configuration {} is VALID.", path.display());
-                    }
-                }
+            let cfg_a = match FirewallConfig::load_from_path(&path_a) {
+                Ok(c) => c,
                 Err(e) => {
-                    eprintln!("Failed to load {}: {}", path.display(), e);
+                    eprintln!(
+                        "[ERROR] Failed to load config A ({}): {}",
+                        path_a.display(),
+                        e
+                    );
                     std::process::exit(1);
                 }
-            }
+            };
+            let cfg_b = match FirewallConfig::load_from_path(&path_b) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!(
+                        "[ERROR] Failed to load config B ({}): {}",
+                        path_b.display(),
+                        e
+                    );
+                    std::process::exit(1);
+                }
+            };
+            diff::display_diff(&cfg_a, &cfg_b);
         }
+        Commands::Validate { path } => match FirewallConfig::load_from_path(&path) {
+            Ok(cfg) => {
+                if let Err(errors) = cfg.validate() {
+                    eprintln!("Validation failed for {}:", path.display());
+                    for err in errors {
+                        eprintln!("  - {}", err);
+                    }
+                    std::process::exit(1);
+                } else {
+                    println!("Configuration {} is VALID.", path.display());
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to load {}: {}", path.display(), e);
+                std::process::exit(1);
+            }
+        },
         Commands::Reload { dir, token } => {
             // Initialize firewall with token if provided (production)
             let init_result = if let Some(t) = token {
@@ -107,25 +137,31 @@ fn main() {
             } else {
                 init()
             };
-            
+
             if let Err(e) = init_result {
                 eprintln!("Firewall initialization failed: {}", e);
                 std::process::exit(1);
             }
-            
+
             // SA-077: Audit log entry for reload operation
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            eprintln!("[AUDIT] Multi-tenant reload initiated at {} for dir: {}", 
-                timestamp, dir.display());
-            
+            eprintln!(
+                "[AUDIT] Multi-tenant reload initiated at {} for dir: {}",
+                timestamp,
+                dir.display()
+            );
+
             // Perform the reload with staged validation (fail-closed)
             match firewall_core::config_watcher::reload_tenant_directory(&dir) {
                 Ok(changed) => {
                     if changed {
-                        println!("Multi-tenant configuration reloaded successfully from {}.", dir.display());
+                        println!(
+                            "Multi-tenant configuration reloaded successfully from {}.",
+                            dir.display()
+                        );
                         // SA-077: Clear evaluation cache after successful reload
                         eprintln!("[AUDIT] Evaluation cache cleared after reload.");
                     } else {
@@ -134,7 +170,10 @@ fn main() {
                 }
                 Err(e) => {
                     // Fail-closed: Log error but keep existing config active
-                    eprintln!("[AUDIT] Reload failed, existing configuration preserved: {}", e);
+                    eprintln!(
+                        "[AUDIT] Reload failed, existing configuration preserved: {}",
+                        e
+                    );
                     eprintln!("Configuration reload failed: {}", e);
                     std::process::exit(1);
                 }

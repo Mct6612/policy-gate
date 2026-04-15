@@ -4,6 +4,10 @@ use crate::types::{AdvisoryTag, ReviewItem, ReviewStatus, Verdict, VerdictKind};
 // review. Thread-safe via Mutex.
 static REVIEW_QUEUE: std::sync::Mutex<Vec<ReviewItem>> = std::sync::Mutex::new(Vec::new());
 
+/// Maximum number of items retained in the review queue.
+/// Oldest entries are evicted when this limit is exceeded to prevent unbounded growth.
+const MAX_REVIEW_QUEUE_SIZE: usize = 10_000;
+
 /// SLA in hours for each verdict kind.
 const DIAGNOSTIC_DISAGREEMENT_SLA_HOURS: u32 = 24;
 const DIAGNOSTIC_AGREEMENT_SLA_HOURS: u32 = 72;
@@ -31,6 +35,10 @@ pub(crate) fn track_review_item(verdict: &Verdict) {
 
     if let Ok(mut queue) = REVIEW_QUEUE.lock() {
         queue.push(item);
+        // Evict oldest entries if the queue exceeds the cap to prevent unbounded growth.
+        while queue.len() > MAX_REVIEW_QUEUE_SIZE {
+            queue.remove(0);
+        }
     }
 }
 

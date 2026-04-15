@@ -85,12 +85,29 @@
 # streaming_egress_final_check = true
 
 
+# ─── Tool-Schema Validation (AgenticToolUse Enhancement) ───────────────────────
+#
+# Optional whitelist of allowed tool names for AgenticToolUse validation.
+# When specified, only these tools may be invoked. Tool calls to other tools
+# result in a Block with reason `ToolNotAllowed`.
+#
+# Example for a research agent:
+# allowed_tools = ["search_tool", "calculator_tool", "weather_tool"]
+#
+# Example for a code assistant:
+# allowed_tools = ["code_executor", "linter_tool", "debugger_tool"]
+#
+# If omitted or empty, all tools are permitted (backward compatible).
+#
+# allowed_tools = []
+
+
 # ─── Semantic Analysis (Channel D - Feature: semantic) ─────────────────────────
 
 # semantic_engine_mode = "fast"     # "fast" (default, deterministic) or "bert" (ML-based).
 # semantic_threshold = 0.70         # Similarity score to trigger advisory tagging.
-# semantic_enforce_threshold = 1.0  # Similarity score to trigger a Hard-Block.
-# semantic_model_path = "models/all-MiniLM-L6-v2.safetensors"
+# semantic_enforce_threshold = 0.95  # default: 0.95 (set to 1.0 to effectively disable)
+# model_path = "models/all-MiniLM-L6-v2.onnx"
 # tokenizer_path = "models/tokenizer.json"
 
 # ─── Notes ────────────────────────────────────────────────────────────────────

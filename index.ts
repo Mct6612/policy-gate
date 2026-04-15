@@ -22,37 +22,48 @@
 // ─── Types (mirrors Rust types.rs) ───────────────────────────────────────────
 
 export type VerdictKind =
-  | 'Pass'
-  | 'Block'
-  | 'DiagnosticAgreement'
-  | 'DiagnosticDisagreement'
-  | 'EgressBlock';
+  | "Pass"
+  | "Block"
+  | "DiagnosticAgreement"
+  | "DiagnosticDisagreement"
+  | "EgressBlock"
+  | "ShadowPass";
 
 export type MatchedIntent =
-  | 'QuestionFactual'
-  | 'QuestionCausal'
-  | 'QuestionComparative'
-  | 'TaskCodeGeneration'
-  | 'TaskTextSummarisation'
-  | 'TaskTranslation'
-  | 'TaskDataExtraction'
-  | 'ConversationalGreeting'
-  | 'ConversationalAcknowledgement'
-  | 'SystemMetaQuery';
+  | "QuestionFactual"
+  | "QuestionCausal"
+  | "QuestionComparative"
+  | "TaskCodeGeneration"
+  | "TaskTextSummarisation"
+  | "TaskTranslation"
+  | "TaskDataExtraction"
+  | "ConversationalGreeting"
+  | "ConversationalAcknowledgement"
+  | "SystemMetaQuery"
+  | "StructuredOutput"
+  | "AgenticToolUse"
+  | "ControlledCreative"
+  | "SemanticViolation";
 
 export type BlockReason =
-  | { type: 'NoIntentMatch' }
-  | { type: 'ForbiddenPattern'; patternId: string }
-  | { type: 'ExceededMaxLength' }
-  | { type: 'WatchdogTimeout' }
-  | { type: 'MalformedInput'; detail: string };
+  | { type: "NoIntentMatch" }
+  | { type: "ForbiddenPattern"; patternId: string }
+  | { type: "ExceededMaxLength" }
+  | { type: "WatchdogTimeout" }
+  | { type: "MalformedInput"; detail: string }
+  | { type: "ProhibitedIntent"; intent: string }
+  | { type: "SemanticTrigger"; similarity: string; reason: string }
+  | { type: "ToolNotAllowed"; toolName: string; allowedTools: string }
+  | { type: "UnknownTenant" }
+  | { type: "AnchorViolation"; detail: string }
+  | { type: "Unknown"; raw: string };
 
 export interface ChannelResult {
-  channel: 'A' | 'B';
+  channel: "A" | "B" | "C" | "D" | "E" | "F";
   decision:
-    | { type: 'Pass'; intent: MatchedIntent }
-    | { type: 'Block'; reason: BlockReason }
-    | { type: 'Fault'; code: string };
+    | { type: "Pass"; intent: MatchedIntent }
+    | { type: "Block"; reason: BlockReason }
+    | { type: "Fault"; code: string };
   elapsedUs: number;
 }
 
@@ -91,10 +102,10 @@ export interface ConversationVerdict {
 }
 
 export interface EgressVerdict {
-  kind: 'Pass' | 'EgressBlock';
+  kind: "Pass" | "EgressBlock";
   isPass: boolean;
   egressReason?: string;
-  audit?: Pick<AuditEntry, 'sequence' | 'inputHash'>;
+  audit?: Pick<AuditEntry, "sequence" | "inputHash">;
 }
 
 // ─── Firewall class ───────────────────────────────────────────────────────────
@@ -144,11 +155,17 @@ export class Firewall {
    * Factory method for multi-tenant deployments.
    * Loads all .toml configurations from the specified directory.
    */
-  static async createMultiTenant(token: string, dirPath: string, opts: FirewallOptions = {}): Promise<Firewall> {
+  static async createMultiTenant(
+    token: string,
+    dirPath: string,
+    opts: FirewallOptions = {},
+  ): Promise<Firewall> {
     const native = await loadNative();
     const initResult = native.initMultiTenantRegistry(token, dirPath);
     if (initResult !== null) {
-      throw new FirewallInitError(`Multi-tenant registry init failed: ${initResult}`);
+      throw new FirewallInitError(
+        `Multi-tenant registry init failed (OC-01): ${initResult}. Call firewall_init() at startup and check its result.`,
+      );
     }
     return new Firewall(native, opts);
   }
@@ -164,22 +181,23 @@ export class Firewall {
     const seq = (this.sequence++).toString();
 
     // All evaluation happens in the Rust core (off the event loop via napi-rs worker thread)
-    const rawVerdict = await this.native.evaluate({ text, role: role ?? undefined, sequence: seq });
+    const rawVerdict = await this.native.evaluate({
+      text,
+      role: role ?? undefined,
+      sequence: seq,
+    });
     const verdict = mapVerdict(rawVerdict);
 
     // Async side-effects (non-blocking, non-safety-critical)
     if (this.opts.onAudit) {
-      this.opts.onAudit(verdict.audit).catch(err => {
-        console.error('[firewall] audit callback error:', err);
+      this.opts.onAudit(verdict.audit).catch((err) => {
+        console.error("[firewall] audit callback error:", err);
       });
     }
 
-    if (
-      verdict.kind === 'DiagnosticDisagreement' &&
-      this.opts.onDisagreement
-    ) {
-      this.opts.onDisagreement(verdict).catch(err => {
-        console.error('[firewall] disagreement callback error:', err);
+    if (verdict.kind === "DiagnosticDisagreement" && this.opts.onDisagreement) {
+      this.opts.onDisagreement(verdict).catch((err) => {
+        console.error("[firewall] disagreement callback error:", err);
       });
     }
 
@@ -194,23 +212,27 @@ export class Firewall {
    * @param role     Optional role tag
    * @returns        Verdict
    */
-  async evaluateForTenant(tenantId: string, text: string, role?: string): Promise<Verdict> {
+  async evaluateForTenant(
+    tenantId: string,
+    text: string,
+    role?: string,
+  ): Promise<Verdict> {
     const seq = (this.sequence++).toString();
-    const rawVerdict = await this.native.evaluateForTenant({ text, role: role ?? undefined, sequence: seq }, tenantId);
+    const rawVerdict = await this.native.evaluateForTenant(
+      { text, role: role ?? undefined, sequence: seq },
+      tenantId,
+    );
     const verdict = mapVerdict(rawVerdict);
 
     if (this.opts.onAudit) {
-      this.opts.onAudit(verdict.audit).catch(err => {
-        console.error('[firewall] audit callback error:', err);
+      this.opts.onAudit(verdict.audit).catch((err) => {
+        console.error("[firewall] audit callback error:", err);
       });
     }
 
-    if (
-      verdict.kind === 'DiagnosticDisagreement' &&
-      this.opts.onDisagreement
-    ) {
-      this.opts.onDisagreement(verdict).catch(err => {
-        console.error('[firewall] disagreement callback error:', err);
+    if (verdict.kind === "DiagnosticDisagreement" && this.opts.onDisagreement) {
+      this.opts.onDisagreement(verdict).catch((err) => {
+        console.error("[firewall] disagreement callback error:", err);
       });
     }
 
@@ -220,26 +242,31 @@ export class Firewall {
   /**
    * Evaluate a multi-message conversation with the core sliding-window checks.
    */
-  async evaluateMessages(messages: ChatMessage[]): Promise<ConversationVerdict> {
+  async evaluateMessages(
+    messages: ChatMessage[],
+  ): Promise<ConversationVerdict> {
     const baseSequence = this.sequence.toString();
     this.sequence += BigInt(messages.length);
 
-    const rawConversation = await this.native.evaluateMessages(messages, baseSequence);
+    const rawConversation = await this.native.evaluateMessages(
+      messages,
+      baseSequence,
+    );
     const verdicts = rawConversation.verdicts.map(mapVerdict);
 
     for (const verdict of verdicts) {
       if (this.opts.onAudit) {
-        this.opts.onAudit(verdict.audit).catch(err => {
-          console.error('[firewall] audit callback error:', err);
+        this.opts.onAudit(verdict.audit).catch((err) => {
+          console.error("[firewall] audit callback error:", err);
         });
       }
 
       if (
-        verdict.kind === 'DiagnosticDisagreement' &&
+        verdict.kind === "DiagnosticDisagreement" &&
         this.opts.onDisagreement
       ) {
-        this.opts.onDisagreement(verdict).catch(err => {
-          console.error('[firewall] disagreement callback error:', err);
+        this.opts.onDisagreement(verdict).catch((err) => {
+          console.error("[firewall] disagreement callback error:", err);
         });
       }
     }
@@ -247,7 +274,9 @@ export class Firewall {
     return {
       isPass: rawConversation.isPass,
       firstBlockIndex:
-        rawConversation.firstBlockIndex >= 0 ? rawConversation.firstBlockIndex : null,
+        rawConversation.firstBlockIndex >= 0
+          ? rawConversation.firstBlockIndex
+          : null,
       verdicts,
     };
   }
@@ -255,7 +284,10 @@ export class Firewall {
   /**
    * Evaluate an LLM response against the original prompt to detect leakage/PII.
    */
-  async evaluateOutput(prompt: string, response: string): Promise<EgressVerdict> {
+  async evaluateOutput(
+    prompt: string,
+    response: string,
+  ): Promise<EgressVerdict> {
     const seq = (this.sequence++).toString();
     const raw = await this.native.evaluateOutput(prompt, response, seq);
     return {
@@ -277,14 +309,14 @@ export class Firewall {
 export class FirewallInitError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'FirewallInitError';
+    this.name = "FirewallInitError";
   }
 }
 
 export class FirewallEvaluationError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'FirewallEvaluationError';
+    this.name = "FirewallEvaluationError";
   }
 }
 
@@ -293,10 +325,24 @@ export class FirewallEvaluationError extends Error {
 interface NativeFirewall {
   init(): string | null;
   initMultiTenantRegistry(token: string, dirPath: string): string | null;
-  evaluate(input: { text: string; role?: string; sequence: string }): Promise<RawVerdict>;
-  evaluateForTenant(input: { text: string; role?: string; sequence: string }, tenantId: string): Promise<RawVerdict>;
-  evaluateMessages(messages: ChatMessage[], baseSequence: string): Promise<RawConversationVerdict>;
-  evaluateOutput(prompt: string, response: string, sequence: string): Promise<RawEgressVerdict>;
+  evaluate(input: {
+    text: string;
+    role?: string;
+    sequence: string;
+  }): Promise<RawVerdict>;
+  evaluateForTenant(
+    input: { text: string; role?: string; sequence: string },
+    tenantId: string,
+  ): Promise<RawVerdict>;
+  evaluateMessages(
+    messages: ChatMessage[],
+    baseSequence: string,
+  ): Promise<RawConversationVerdict>;
+  evaluateOutput(
+    prompt: string,
+    response: string,
+    sequence: string,
+  ): Promise<RawEgressVerdict>;
 }
 
 interface RawVerdict {
@@ -328,7 +374,7 @@ interface RawConversationVerdict {
 }
 
 interface RawEgressVerdict {
-  kind: 'Pass' | 'EgressBlock';
+  kind: "Pass" | "EgressBlock";
   isPass: boolean;
   egressReason: string;
   inputHash: string;
@@ -340,17 +386,20 @@ async function loadNative(): Promise<NativeFirewall> {
   // During development, fall back to a mock if the native module isn't compiled yet.
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const native = require('../native/index.node');
+    const native = require("../native/index.node");
     return {
       init: native.firewallInit.bind(native),
-      initMultiTenantRegistry: native.firewallInitMultiTenantRegistry.bind(native),
+      initMultiTenantRegistry:
+        native.firewallInitMultiTenantRegistry.bind(native),
       evaluate: native.firewallEvaluate.bind(native),
-      evaluateForTenant: native.firewallEvaluateFor_tenant ? native.firewallEvaluateFor_tenant.bind(native) : native.firewallEvaluateForTenant.bind(native),
+      evaluateForTenant: native.firewallEvaluateFor_tenant
+        ? native.firewallEvaluateFor_tenant.bind(native)
+        : native.firewallEvaluateForTenant.bind(native),
       evaluateMessages: native.firewallEvaluateMessages.bind(native),
       evaluateOutput: native.firewallEvaluateOutput.bind(native),
     };
   } catch {
-    console.warn('[firewall] Native module not found — using development stub');
+    console.warn("[firewall] Native module not found — using development stub");
     return devStub();
   }
 }
@@ -362,58 +411,75 @@ function mapVerdict(raw: RawVerdict): Verdict {
         sequence: BigInt(raw.audit.sequence),
       }
     : {
-        sequence: BigInt(raw.sequence ?? '0'),
+        sequence: BigInt(raw.sequence ?? "0"),
         ingestedAtNs: 0n,
         decidedAtNs: 0n,
         totalElapsedUs: raw.elapsedUs ?? 0,
         verdictKind: raw.kind,
-        inputHash: raw.inputHash ?? '',
-        tenantId: raw.tenantId ?? 'default',
+        inputHash: raw.inputHash ?? "",
+        tenantId: raw.tenantId ?? "default",
       };
-  const channelA = raw.channelA ?? parseStableChannelDecision('A', raw.channelADecision ?? 'Fault:InternalPanic', raw.elapsedUs ?? audit.totalElapsedUs, raw.blockReason);
-  const channelB = raw.channelB ?? parseStableChannelDecision('B', raw.channelBDecision ?? 'Fault:InternalPanic', raw.elapsedUs ?? audit.totalElapsedUs, raw.blockReason);
+  const channelA =
+    raw.channelA ??
+    parseStableChannelDecision(
+      "A",
+      raw.channelADecision ?? "Fault:InternalPanic",
+      raw.elapsedUs ?? audit.totalElapsedUs,
+      raw.blockReason,
+    );
+  const channelB =
+    raw.channelB ??
+    parseStableChannelDecision(
+      "B",
+      raw.channelBDecision ?? "Fault:InternalPanic",
+      raw.elapsedUs ?? audit.totalElapsedUs,
+      raw.blockReason,
+    );
 
   return {
     kind: raw.kind,
-    isPass: raw.kind === 'Pass' || raw.kind === 'DiagnosticAgreement',
+    isPass:
+      raw.kind === "Pass" ||
+      raw.kind === "DiagnosticAgreement" ||
+      raw.kind === "ShadowPass",
     channelA,
     channelB,
     audit,
     tenantId: audit.tenantId,
     blockReason:
-      raw.kind === 'Block' || raw.kind === 'DiagnosticDisagreement'
-        ? raw.blockReason
-          || formatBlockReasonFromDecision(channelA.decision)
-          || formatBlockReasonFromDecision(channelB.decision)
+      raw.kind === "Block" || raw.kind === "DiagnosticDisagreement"
+        ? raw.blockReason ||
+          formatBlockReasonFromDecision(channelA.decision) ||
+          formatBlockReasonFromDecision(channelB.decision)
         : undefined,
   };
 }
 
 function parseStableChannelDecision(
-  channel: 'A' | 'B',
+  channel: "A" | "B" | "C" | "D" | "E" | "F",
   value: string,
   elapsedUs: number,
   fallbackBlockReason?: string,
 ): ChannelResult {
-  const [kind, ...rest] = value.split(':');
-  const payload = rest.join(':');
+  const [kind, ...rest] = value.split(":");
+  const payload = rest.join(":");
 
-  if (kind === 'Pass') {
+  if (kind === "Pass") {
     return {
       channel,
       decision: {
-        type: 'Pass',
+        type: "Pass",
         intent: payload as MatchedIntent,
       },
       elapsedUs,
     };
   }
 
-  if (kind === 'Fault') {
+  if (kind === "Fault") {
     return {
       channel,
       decision: {
-        type: 'Fault',
+        type: "Fault",
         code: payload,
       },
       elapsedUs,
@@ -423,46 +489,70 @@ function parseStableChannelDecision(
   return {
     channel,
     decision: {
-      type: 'Block',
-      reason: parseStableBlockReason(payload || fallbackBlockReason || 'NoIntentMatch'),
+      type: "Block",
+      reason: parseStableBlockReason(
+        payload || fallbackBlockReason || "NoIntentMatch",
+      ),
     },
     elapsedUs,
   };
 }
 
 function parseStableBlockReason(value: string): BlockReason {
-  const [kind, ...rest] = value.split(':');
-  const payload = rest.join(':');
+  const [kind, ...rest] = value.split(":");
+  const payload = rest.join(":");
 
   switch (kind) {
-    case 'ForbiddenPattern':
-      return { type: 'ForbiddenPattern', patternId: payload };
-    case 'MalformedInput':
-      return { type: 'MalformedInput', detail: payload };
-    case 'UnknownTenant':
-      return { type: 'MalformedInput', detail: 'UnknownTenant' };
-    case 'AnchorViolation':
-      return { type: 'MalformedInput', detail: `AnchorViolation:${payload}` };
-    case 'ExceededMaxLength':
-      return { type: 'ExceededMaxLength' };
-    case 'WatchdogTimeout':
-      return { type: 'WatchdogTimeout' };
-    case 'NoIntentMatch':
+    case "ForbiddenPattern":
+      return { type: "ForbiddenPattern", patternId: payload };
+    case "MalformedInput":
+      return { type: "MalformedInput", detail: payload };
+    case "UnknownTenant":
+      return { type: "UnknownTenant" };
+    case "AnchorViolation":
+      return { type: "AnchorViolation", detail: payload };
+    case "ExceededMaxLength":
+      return { type: "ExceededMaxLength" };
+    case "WatchdogTimeout":
+      return { type: "WatchdogTimeout" };
+    case "ProhibitedIntent":
+      return { type: "ProhibitedIntent", intent: payload };
+    case "SemanticTrigger": {
+      const [similarity, ...reasonParts] = payload.split(":");
+      return {
+        type: "SemanticTrigger",
+        similarity,
+        reason: reasonParts.join(":"),
+      };
+    }
+    case "ToolNotAllowed": {
+      const colonIdx = payload.indexOf(":");
+      const toolName = colonIdx >= 0 ? payload.slice(0, colonIdx) : payload;
+      const allowedTools = colonIdx >= 0 ? payload.slice(colonIdx + 1) : "";
+      return { type: "ToolNotAllowed", toolName, allowedTools };
+    }
+    case "NoIntentMatch":
+      return { type: "NoIntentMatch" };
     default:
-      return { type: 'NoIntentMatch' };
+      console.warn(
+        `[firewall] unknown BlockReason kind: ${JSON.stringify(kind)}`,
+      );
+      return { type: "Unknown", raw: value };
   }
 }
 
-function formatBlockReasonFromDecision(decision: ChannelResult['decision']): string | undefined {
-  if (decision.type !== 'Block') {
+function formatBlockReasonFromDecision(
+  decision: ChannelResult["decision"],
+): string | undefined {
+  if (decision.type !== "Block") {
     return undefined;
   }
 
   const reason = decision.reason;
   switch (reason.type) {
-    case 'ForbiddenPattern':
+    case "ForbiddenPattern":
       return `${reason.type}:${reason.patternId}`;
-    case 'MalformedInput':
+    case "MalformedInput":
       return `${reason.type}:${reason.detail}`;
     default:
       return reason.type;
@@ -478,23 +568,27 @@ function devStub(): NativeFirewall {
     init: () => null,
     initMultiTenantRegistry: () => null,
     evaluate: async (input) => {
-      const passPatterns = [/\?$/, /^(hi|hello|hey)/i, /\b(write|create|generate)\b.*\b(function|code)\b/i];
-      const isPass = passPatterns.some(p => p.test(input.text));
+      const passPatterns = [
+        /\?$/,
+        /^(hi|hello|hey)/i,
+        /\b(write|create|generate)\b.*\b(function|code)\b/i,
+      ];
+      const isPass = passPatterns.some((p) => p.test(input.text));
       const now = BigInt(Date.now()) * 1_000_000n;
       return {
-        kind: isPass ? 'Pass' : 'Block',
+        kind: isPass ? "Pass" : "Block",
         channelA: {
-          channel: 'A',
+          channel: "A",
           decision: isPass
-            ? { type: 'Pass', intent: 'QuestionFactual' }
-            : { type: 'Block', reason: { type: 'NoIntentMatch' } },
+            ? { type: "Pass", intent: "QuestionFactual" }
+            : { type: "Block", reason: { type: "NoIntentMatch" } },
           elapsedUs: 12,
         },
         channelB: {
-          channel: 'B',
+          channel: "B",
           decision: isPass
-            ? { type: 'Pass', intent: 'QuestionFactual' }
-            : { type: 'Block', reason: { type: 'NoIntentMatch' } },
+            ? { type: "Pass", intent: "QuestionFactual" }
+            : { type: "Block", reason: { type: "NoIntentMatch" } },
           elapsedUs: 8,
         },
         audit: {
@@ -502,9 +596,9 @@ function devStub(): NativeFirewall {
           ingestedAtNs: now,
           decidedAtNs: now + 20_000n,
           totalElapsedUs: 20,
-          verdictKind: isPass ? 'Pass' : 'Block',
+          verdictKind: isPass ? "Pass" : "Block",
           inputHash: `stub-${input.text.length}`,
-          tenantId: 'default',
+          tenantId: "default",
         },
       };
     },
@@ -528,19 +622,24 @@ function devStub(): NativeFirewall {
           }),
         ),
       );
-      const firstBlocked = verdicts.findIndex(v => v.kind === 'Block' || v.kind === 'DiagnosticDisagreement');
+      const firstBlocked = verdicts.findIndex(
+        (v) => v.kind === "Block" || v.kind === "DiagnosticDisagreement",
+      );
       return {
         isPass: firstBlocked === -1,
         firstBlockIndex: firstBlocked,
-        verdicts: firstBlocked === -1 ? verdicts : verdicts.slice(0, firstBlocked + 1),
+        verdicts:
+          firstBlocked === -1 ? verdicts : verdicts.slice(0, firstBlocked + 1),
       };
     },
     evaluateOutput: async (prompt, response, sequence) => {
-      const leaked = response.toLowerCase().includes('system prompt') || response.includes(prompt.slice(0, 20));
+      const leaked =
+        response.toLowerCase().includes("system prompt") ||
+        response.includes(prompt.slice(0, 20));
       return {
-        kind: leaked ? 'EgressBlock' : 'Pass',
+        kind: leaked ? "EgressBlock" : "Pass",
         isPass: !leaked,
-        egressReason: leaked ? 'SystemPromptLeakage:stub-detected' : '',
+        egressReason: leaked ? "SystemPromptLeakage:stub-detected" : "",
         inputHash: `stub-${prompt.length}`,
         sequence,
       };

@@ -48,20 +48,29 @@ pub use review::ReviewStats;
 pub use types::*;
 
 // SA-076: Session-Aware-Layer exports
-pub use session::{SessionManager, SessionAnalysis, SessionRiskLevel, evaluate_with_session};
+pub use session::{evaluate_with_session, SessionAnalysis, SessionManager, SessionRiskLevel};
 
 // SA-077: Hot-reload config exports
-pub use config_watcher::{ConfigSnapshot, get_current_config, try_reload_config, reload_tenant_directory};
+pub use config_watcher::{
+    get_current_config, reload_tenant_directory, shutdown_config_watcher, try_reload_config,
+    ConfigSnapshot,
+};
 // SA-047: Profile exports for backward compatibility
 pub use init::active_profile_intents;
 
 // SA-NEW: Pillar 6 — Streaming egress public exports
 #[cfg(feature = "streaming-egress")]
-pub use stream_scanner::{StreamScanner, StreamEgressDecision, STREAM_EGRESS_OVERLAP_BYTES, STREAM_EGRESS_MAX_PATTERN_BYTES};
+pub use stream_scanner::{
+    StreamEgressDecision, StreamScanner, STREAM_EGRESS_MAX_PATTERN_BYTES,
+    STREAM_EGRESS_OVERLAP_BYTES,
+};
 
 use ingress::{pre_scan_block, prompt_input_or_block};
 use init::{is_initialised, uninitialised_block};
-use std::sync::{atomic::{AtomicU64, Ordering}, Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex, OnceLock,
+};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ─── Evaluation Cache (Pillar 2: Performance) ───────────────────────────────
@@ -83,7 +92,7 @@ fn get_cache() -> &'static Mutex<lru::LruCache<String, CachedResult>> {
     EVAL_CACHE.get_or_init(|| {
         Mutex::new(lru::LruCache::new(
             std::num::NonZeroUsize::new(DEFAULT_CACHE_CAPACITY)
-                .expect("DEFAULT_CACHE_CAPACITY must be > 0")
+                .expect("DEFAULT_CACHE_CAPACITY must be > 0"),
         ))
     })
 }
@@ -130,8 +139,7 @@ pub fn init() -> Result<(), FirewallInitError> {
     init::init()?;
     // Pillar 6: initialise Aho-Corasick global searcher when the feature is compiled in.
     #[cfg(feature = "streaming-egress")]
-    stream_scanner::init_global_scanner()
-        .map_err(FirewallInitError::PatternCompileFailure)?;
+    stream_scanner::init_global_scanner().map_err(FirewallInitError::PatternCompileFailure)?;
     Ok(())
 }
 
@@ -213,7 +221,9 @@ pub fn evaluate_output_for_tenant(
         });
     }
 
-    Ok(egress::evaluate_output(prompt, response, sequence, tenant_id))
+    Ok(egress::evaluate_output(
+        prompt, response, sequence, tenant_id,
+    ))
 }
 
 pub fn evaluate_output(
@@ -301,7 +311,11 @@ pub fn evaluate_raw(raw: impl Into<String>, sequence: u64) -> Verdict {
     evaluate_raw_for_tenant(raw, sequence, None)
 }
 /// Evaluate a prompt through the 1oo2D safety gate for a specific tenant.
-pub fn evaluate_for_tenant(input: &mut PromptInput, sequence: u64, tenant_id: Option<&str>) -> Verdict {
+pub fn evaluate_for_tenant(
+    input: &mut PromptInput,
+    sequence: u64,
+    tenant_id: Option<&str>,
+) -> Verdict {
     // DC-GAP-05: guard for direct firewall-core callers (mirrors napi SA-021 guard).
     if !is_initialised() {
         return uninitialised_block(sequence, now_ns());
@@ -345,7 +359,7 @@ pub fn evaluate_batch_parallel(raw_inputs: Vec<String>, start_sequence: u64) -> 
             }
 
             match prompt_input_or_block(raw, sequence, ingested_at_ns, now_ns) {
-                Ok(input) => evaluate(input, sequence),
+                Ok(mut input) => evaluate(&mut input, sequence),
                 Err(verdict) => verdict,
             }
         })
@@ -377,7 +391,6 @@ pub fn get_review_stats() -> ReviewStats {
     review::get_review_stats()
 }
 
-
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -387,10 +400,7 @@ mod tests {
     fn eval(text: &str) -> Verdict {
         init().expect("init failed in test");
         let mut input = PromptInput::new(text).expect("PromptInput::new failed in test");
-        evaluate(
-            &mut input,
-            0,
-        )
+        evaluate(&mut input, 0)
     }
 
     // ── Pass cases ────────────────────────────────────────────────────────────
@@ -479,20 +489,30 @@ mod tests {
             10,
             crate::types::ChannelResult {
                 channel: crate::types::ChannelId::A,
-                decision: crate::types::ChannelDecision::Pass { intent: crate::types::MatchedIntent::QuestionFactual },
+                decision: crate::types::ChannelDecision::Pass {
+                    intent: crate::types::MatchedIntent::QuestionFactual,
+                },
                 elapsed_us: 5,
                 similarity: None,
             },
             crate::types::ChannelResult {
                 channel: crate::types::ChannelId::B,
-                decision: crate::types::ChannelDecision::Pass { intent: crate::types::MatchedIntent::QuestionFactual },
+                decision: crate::types::ChannelDecision::Pass {
+                    intent: crate::types::MatchedIntent::QuestionFactual,
+                },
                 elapsed_us: 3,
                 similarity: None,
             },
             None,
         );
-        assert!(test_entry.channel_a_result.is_some(), "Detailed entry must have Channel A result");
-        assert!(test_entry.channel_b_result.is_some(), "Detailed entry must have Channel B result");
+        assert!(
+            test_entry.channel_a_result.is_some(),
+            "Detailed entry must have Channel A result"
+        );
+        assert!(
+            test_entry.channel_b_result.is_some(),
+            "Detailed entry must have Channel B result"
+        );
     }
 
     // ── Init guard (DC-GAP-05) ────────────────────────────────────────────────
@@ -562,7 +582,10 @@ mod tests {
         // German
         let v_de = evaluate_raw("Wer ist der Präsident der USA?", 1);
         if !v_de.is_pass() {
-            println!("DEBUG: German test failed. Verdict: {:?}, Reason: {:?}", v_de.kind, v_de.audit.block_reason);
+            println!(
+                "DEBUG: German test failed. Verdict: {:?}, Reason: {:?}",
+                v_de.kind, v_de.audit.block_reason
+            );
         }
         assert!(v_de.is_pass(), "German factual question should pass");
         assert!(v_de.audit.input_hash.len() > 0);
@@ -583,8 +606,7 @@ mod tests {
 
         // Teste compute_audit_hmac direkt mit synthetischen Entries —
         // kein globaler LAST_AUDIT_HMAC-State, kein Parallelitätsproblem.
-        let key = audit::hmac_key()
-            .expect("HMAC_KEY muss nach init() gesetzt sein");
+        let key = audit::hmac_key().expect("HMAC_KEY muss nach init() gesetzt sein");
 
         let make_entry = |seq: u64| {
             AuditEntry::basic(

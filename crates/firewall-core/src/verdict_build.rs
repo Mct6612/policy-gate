@@ -6,9 +6,7 @@ use crate::types::{
     PromptInput, Verdict, VerdictKind,
 };
 
-pub(crate) fn advisory_tag(
-    event: &advisory::AdvisoryEvent,
-) -> AdvisoryTag {
+pub(crate) fn advisory_tag(event: &advisory::AdvisoryEvent) -> AdvisoryTag {
     match event {
         advisory::AdvisoryEvent::AdvisoryDisagreement {
             score,
@@ -30,19 +28,20 @@ pub(crate) fn block_reason(
 ) -> Option<BlockReason> {
     match verdict_kind {
         VerdictKind::Pass | VerdictKind::DiagnosticAgreement => None,
-        VerdictKind::Block | VerdictKind::DiagnosticDisagreement | VerdictKind::EgressBlock | VerdictKind::ShadowPass => {
-            match &channel_a.decision {
+        VerdictKind::Block
+        | VerdictKind::DiagnosticDisagreement
+        | VerdictKind::EgressBlock
+        | VerdictKind::ShadowPass => match &channel_a.decision {
+            ChannelDecision::Block { reason } => Some(reason.clone()),
+            ChannelDecision::Fault { .. } => match &channel_b.decision {
                 ChannelDecision::Block { reason } => Some(reason.clone()),
-                ChannelDecision::Fault { .. } => match &channel_b.decision {
-                    ChannelDecision::Block { reason } => Some(reason.clone()),
-                    _ => None,
-                },
-                _ => match &channel_b.decision {
-                    ChannelDecision::Block { reason } => Some(reason.clone()),
-                    _ => None,
-                },
-            }
-        }
+                _ => None,
+            },
+            _ => match &channel_b.decision {
+                ChannelDecision::Block { reason } => Some(reason.clone()),
+                _ => None,
+            },
+        },
     }
 }
 
@@ -163,7 +162,7 @@ pub(crate) fn build_final_verdict_from_cache(
             None,
             None,
             None,
-            decided_ns - (total_us as u128 * 1_000), // Approximate ingested_at
+            decided_ns.saturating_sub(total_us as u128 * 1_000), // Approximate ingested_at
             decided_ns,
             total_us,
             tenant_id,

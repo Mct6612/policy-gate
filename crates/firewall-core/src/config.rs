@@ -34,7 +34,6 @@ const MAX_QUANTIFIER_DEPTH: usize = 3;
 const MAX_ALTERNATION_COUNT: usize = 10;
 const MAX_STAR_PLUS_NESTING: usize = 2;
 
-
 /// Configuration structure for the firewall.
 impl Default for FirewallConfig {
     fn default() -> Self {
@@ -59,6 +58,7 @@ impl Default for FirewallConfig {
             on_diagnostic_agreement: OnDiagnosticAgreement::PassAndLog,
             streaming_egress_enabled: false,
             streaming_egress_final_check: true,
+            allowed_tools: None,
         }
     }
 }
@@ -84,7 +84,7 @@ pub struct FirewallConfig {
     pub context_window: Option<usize>,
     /// Shadow Mode: evaluates inputs but allows them to pass even if blocked.
     pub shadow_mode: Option<bool>,
-    /// SA-XXX: Audit detail level for operator review support.
+    /// Audit detail level for operator review support.
     /// "basic" (default) stores only block_reason and hash.
     /// "detailed" stores full ChannelResult for side-by-side analysis.
     /// Increases audit log size but enables operator_review.py to analyze
@@ -127,6 +127,16 @@ pub struct FirewallConfig {
     /// Default: `true`.
     #[serde(default = "default_streaming_egress_final_check")]
     pub streaming_egress_final_check: bool,
+
+    // ── Tool-Schema Validation (AgenticToolUse Enhancement) ──────────────────
+    /// Optional whitelist of allowed tool names for AgenticToolUse validation.
+    /// When specified, only these tools may be invoked. Tool calls to other tools
+    /// result in a Block with reason `ToolNotAllowed`.
+    ///
+    /// Example: `["weather_tool", "calculator_tool"]`
+    /// If `None` or empty, all tools are permitted (backward compatible).
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// A single intent pattern entry in the configuration.
@@ -153,7 +163,9 @@ pub struct RuleExceptionEntry {
 
 /// SA-084: Validate regex pattern for ReDoS vulnerabilities
 /// Returns Ok(()) if pattern is safe, Err(reason) if potentially dangerous
-fn default_streaming_egress_final_check() -> bool { true }
+fn default_streaming_egress_final_check() -> bool {
+    true
+}
 
 fn validate_regex_redos(pattern: &str) -> Result<(), String> {
     // 1. Length check - extremely long patterns are suspicious
@@ -196,8 +208,10 @@ fn validate_regex_redos(pattern: &str) -> Result<(), String> {
 
     if star_plus_count > MAX_QUANTIFIER_DEPTH && paren_depth > MAX_STAR_PLUS_NESTING {
         // Check if quantifiers are nested (heuristic: quantifier followed by paren)
-        let nested_pattern = pattern.contains("+(") || pattern.contains("*(")
-            || pattern.contains("+[") || pattern.contains("*[");
+        let nested_pattern = pattern.contains("+(")
+            || pattern.contains("*(")
+            || pattern.contains("+[")
+            || pattern.contains("*[");
 
         if nested_pattern {
             return Err(format!(
@@ -283,7 +297,10 @@ impl FirewallConfig {
                 }
 
                 if let Err(e) = regex::Regex::new(&entry.regex) {
-                    errors.push(format!("Invalid regex in exception for [{}]: {}", entry.rule_id, e));
+                    errors.push(format!(
+                        "Invalid regex in exception for [{}]: {}",
+                        entry.rule_id, e
+                    ));
                 }
             }
         }
@@ -293,7 +310,7 @@ impl FirewallConfig {
         //    guaranteed by the 256-byte overlap buffer.
         #[cfg(feature = "streaming-egress")]
         if self.streaming_egress_enabled {
-            use crate::stream_scanner::{STREAM_EGRESS_MAX_PATTERN_BYTES, BUILTIN_PATTERNS};
+            use crate::stream_scanner::{BUILTIN_PATTERNS, STREAM_EGRESS_MAX_PATTERN_BYTES};
             // BUILTIN_PATTERNS is pub(crate) — only reachable within firewall-core
             for (id, pattern) in BUILTIN_PATTERNS {
                 if pattern.len() > STREAM_EGRESS_MAX_PATTERN_BYTES {
@@ -368,6 +385,27 @@ impl FirewallConfig {
 
     /// Loads configuration from a JSON string.
     pub fn from_json_str(content: &str) -> Result<Self, String> {
-        serde_json::from_str(content).map_err(|e| format!("Failed to parse JSON configuration: {e}"))
+        serde_json::from_str(content)
+            .map_err(|e| format!("Failed to parse JSON configuration: {e}"))
     }
+}
+
+// ─── Global Config Storage ────────────────────────────────────────────────────
+// SA-048: Global configuration storage for runtime access (e.g., from bindings).
+// This is set during init() and can be updated during hot-reloads.
+
+use std::sync::OnceLock;
+
+static CURRENT_CONFIG: OnceLock<FirewallConfig> = OnceLock::new();
+
+/// Sets the global configuration. Called during init() and hot-reloads.
+/// Returns Err if the config was already set (should not happen in normal operation).
+pub fn set_global_config(config: FirewallConfig) -> Result<(), FirewallConfig> {
+    CURRENT_CONFIG.set(config)
+}
+
+/// Gets the current global configuration, if one has been set.
+/// Returns None if init() has not been called yet.
+pub fn get_current_config() -> Option<&'static FirewallConfig> {
+    CURRENT_CONFIG.get()
 }

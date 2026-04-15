@@ -68,9 +68,29 @@ pub(crate) fn evaluate_output(
         _ => VerdictKind::EgressBlock,
     };
 
-    let egress_reason = egress_reason(&channel_e, &channel_f, &verdict_kind);
+    // SA-077 extension: Structured output PII scanning (JSON/XML).
+    // Complements Channel E's plain-text PII patterns for structured response formats.
+    // Only runs when channels E and F both passed — avoids double-blocking.
+    let structured_egress_reason: Option<EgressBlockReason> = if verdict_kind == VerdictKind::Pass {
+        crate::egress_structured::scan_structured_output(response).map(|r| {
+            EgressBlockReason::PiiDetected {
+                pii_type: format!("Structured:{}", r.data_type),
+            }
+        })
+    } else {
+        None
+    };
 
-    if crate::init::get_config_for_tenant(tenant_id).and_then(|c| c.shadow_mode).unwrap_or(false)
+    if structured_egress_reason.is_some() {
+        verdict_kind = VerdictKind::EgressBlock;
+    }
+
+    let egress_reason =
+        structured_egress_reason.or_else(|| egress_reason(&channel_e, &channel_f, &verdict_kind));
+
+    if crate::init::get_config_for_tenant(tenant_id)
+        .and_then(|c| c.shadow_mode)
+        .unwrap_or(false)
         && verdict_kind == VerdictKind::EgressBlock
     {
         verdict_kind = VerdictKind::ShadowPass;
@@ -89,7 +109,7 @@ pub(crate) fn evaluate_output(
         egress_reason.clone(),
         prompt.ingested_at_ns,
         decided_ns,
-        ((decided_ns - prompt.ingested_at_ns) / 1_000).min(u64::MAX as u128) as u64,
+        (decided_ns.saturating_sub(prompt.ingested_at_ns) / 1_000).min(u64::MAX as u128) as u64,
         tenant_id.map(|s| s.to_string()),
     );
 

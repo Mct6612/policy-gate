@@ -10,7 +10,10 @@
 
 #![deny(clippy::all)]
 
-use firewall_core::{evaluate_messages, evaluate_output, evaluate_raw, evaluate_raw_for_tenant, init, init_multi_tenant_registry, ChatMessage, PromptInput};
+use firewall_core::{
+    evaluate_messages, evaluate_output, evaluate_raw, evaluate_raw_for_tenant, init,
+    init_multi_tenant_registry, ChatMessage, PromptInput,
+};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use std::sync::OnceLock;
@@ -33,9 +36,8 @@ static INIT_RESULT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 /// If this returns an error the process must not call firewall_evaluate().
 #[napi]
 pub fn firewall_init() -> Option<String> {
-    let result: &std::result::Result<(), String> = INIT_RESULT.get_or_init(|| {
-        init().map_err(|e: firewall_core::FirewallInitError| e.to_string())
-    });
+    let result: &std::result::Result<(), String> = INIT_RESULT
+        .get_or_init(|| init().map_err(|e: firewall_core::FirewallInitError| e.to_string()));
     match result {
         Ok(()) => None,
         Err(e) => Some(e.clone()),
@@ -46,6 +48,18 @@ pub fn firewall_init() -> Option<String> {
 /// Returns null on success, error string on failure.
 #[napi]
 pub fn firewall_init_multi_tenant_registry(token: String, dir_path: String) -> Option<String> {
+    // OC-02: Guard against calling this after firewall_init() or an auto-init via evaluate().
+    // INIT_RESULT is a OnceLock — if already set by a different init path, get_or_init()
+    // would silently short-circuit without initialising the multi-tenant registry.
+    // We make this visible to the caller instead.
+    if INIT_RESULT.get().is_some() {
+        return Some(
+            "Firewall already initialised (OC-02): firewall_init() or an auto-init from \
+             evaluate() was called before firewall_init_multi_tenant_registry(). \
+             Call firewall_init_multi_tenant_registry() at startup before any evaluate() call."
+                .to_string(),
+        );
+    }
     let result: &std::result::Result<(), String> = INIT_RESULT.get_or_init(|| {
         init_multi_tenant_registry(&token, &dir_path)
             .map_err(|e: firewall_core::FirewallInitError| e.to_string())
@@ -82,9 +96,8 @@ pub async fn firewall_evaluate(input: JsEvalInput) -> Result<JsVerdict> {
     // OC-01 guard (SA-021): reject evaluation if init() was never called or failed.
     // get_or_init here ensures that even if firewall_init() was never called,
     // we attempt init() exactly once and cache the result.
-    let init_ok: &std::result::Result<(), String> = INIT_RESULT.get_or_init(|| {
-        init().map_err(|e: firewall_core::FirewallInitError| e.to_string())
-    });
+    let init_ok: &std::result::Result<(), String> = INIT_RESULT
+        .get_or_init(|| init().map_err(|e: firewall_core::FirewallInitError| e.to_string()));
     if let Err(e) = init_ok {
         return Err(napi::Error::from_reason(format!(
             "firewall not initialised (OC-01): {}. Call firewall_init() at startup and check its result.",
@@ -93,11 +106,12 @@ pub async fn firewall_evaluate(input: JsEvalInput) -> Result<JsVerdict> {
     }
 
     let text = input.text;
-    let sequence: u64 = input.sequence
-        .parse()
-        .map_err(|_| napi::Error::from_reason(
-            format!("Invalid sequence number: '{}'. Expected a decimal number.", input.sequence)
-        ))?;
+    let sequence: u64 = input.sequence.parse().map_err(|_| {
+        napi::Error::from_reason(format!(
+            "Invalid sequence number: '{}'. Expected a decimal number.",
+            input.sequence
+        ))
+    })?;
     // Note: input.role is metadata only — not used in any safety-path evaluation.
     // evaluate_raw handles normalisation, size-check, and both channels internally.
 
@@ -109,7 +123,9 @@ pub async fn firewall_evaluate(input: JsEvalInput) -> Result<JsVerdict> {
     // evaluate_raw's internal guard is a no-op (not a double-check concern).
     let verdict = evaluate_raw(text, sequence);
 
-    let block_reason = verdict.audit.block_reason
+    let block_reason = verdict
+        .audit
+        .block_reason
         .as_ref()
         .map(stable_block_reason)
         .unwrap_or_default();
@@ -128,25 +144,31 @@ pub async fn firewall_evaluate(input: JsEvalInput) -> Result<JsVerdict> {
 }
 
 #[napi]
-pub async fn firewall_evaluate_for_tenant(input: JsEvalInput, tenant_id: String) -> Result<JsVerdict> {
-    let init_ok: &std::result::Result<(), String> = INIT_RESULT.get_or_init(|| {
-        init().map_err(|e: firewall_core::FirewallInitError| e.to_string())
-    });
+pub async fn firewall_evaluate_for_tenant(
+    input: JsEvalInput,
+    tenant_id: String,
+) -> Result<JsVerdict> {
+    let init_ok: &std::result::Result<(), String> = INIT_RESULT
+        .get_or_init(|| init().map_err(|e: firewall_core::FirewallInitError| e.to_string()));
     if let Err(e) = init_ok {
         return Err(napi::Error::from_reason(format!(
-            "firewall not initialised: {}. Call firewall_init() at startup.", e
+            "firewall not initialised: {}. Call firewall_init() at startup.",
+            e
         )));
     }
 
     let text = input.text;
-    let sequence: u64 = input.sequence
-        .parse()
-        .map_err(|_| napi::Error::from_reason(
-            format!("Invalid sequence number: '{}'. Expected a decimal number.", input.sequence)
-        ))?;
+    let sequence: u64 = input.sequence.parse().map_err(|_| {
+        napi::Error::from_reason(format!(
+            "Invalid sequence number: '{}'. Expected a decimal number.",
+            input.sequence
+        ))
+    })?;
     let verdict = evaluate_raw_for_tenant(text, sequence, Some(tenant_id));
 
-    let block_reason = verdict.audit.block_reason
+    let block_reason = verdict
+        .audit
+        .block_reason
         .as_ref()
         .map(stable_block_reason)
         .unwrap_or_default();
@@ -173,27 +195,35 @@ pub async fn firewall_evaluate_for_tenant(input: JsEvalInput, tenant_id: String)
 fn stable_verdict_kind(k: &firewall_core::VerdictKind) -> String {
     use firewall_core::VerdictKind::*;
     match k {
-        Pass                  => "Pass".into(),
-        Block                 => "Block".into(),
-        DiagnosticAgreement   => "DiagnosticAgreement".into(),
+        Pass => "Pass".into(),
+        Block => "Block".into(),
+        DiagnosticAgreement => "DiagnosticAgreement".into(),
         DiagnosticDisagreement => "DiagnosticDisagreement".into(),
-        EgressBlock           => "EgressBlock".into(),
-        ShadowPass            => "ShadowPass".into(),
+        EgressBlock => "EgressBlock".into(),
+        ShadowPass => "ShadowPass".into(),
     }
 }
 
 fn stable_block_reason(r: &firewall_core::BlockReason) -> String {
     use firewall_core::BlockReason::*;
     match r {
-        NoIntentMatch              => "NoIntentMatch".into(),
-        ExceededMaxLength          => "ExceededMaxLength".into(),
-        WatchdogTimeout            => "WatchdogTimeout".into(),
+        NoIntentMatch => "NoIntentMatch".into(),
+        ExceededMaxLength => "ExceededMaxLength".into(),
+        WatchdogTimeout => "WatchdogTimeout".into(),
         ForbiddenPattern { pattern_id } => format!("ForbiddenPattern:{}", pattern_id),
-        MalformedInput   { detail }     => format!("MalformedInput:{}", detail),
-        ProhibitedIntent { intent }     => format!("ProhibitedIntent:{}", stable_intent(intent)),
-        SemanticTrigger { similarity, reason } => format!("SemanticTrigger:{:.3}:{}", similarity, reason),
-        UnknownTenant                   => "UnknownTenant".into(),
-        AnchorViolation { detail }      => format!("AnchorViolation:{}", detail),
+        MalformedInput { detail } => format!("MalformedInput:{}", detail),
+        ProhibitedIntent { intent } => format!("ProhibitedIntent:{}", stable_intent(intent)),
+        SemanticTrigger { similarity, reason } => {
+            format!("SemanticTrigger:{:.3}:{}", similarity, reason)
+        }
+        UnknownTenant => "UnknownTenant".into(),
+        AnchorViolation { detail } => format!("AnchorViolation:{}", detail),
+        ToolNotAllowed {
+            tool_name,
+            allowed_tools,
+        } => {
+            format!("ToolNotAllowed:{}:[{}]", tool_name, allowed_tools.join(","))
+        }
     }
 }
 
@@ -202,36 +232,36 @@ fn stable_channel_decision(d: &firewall_core::ChannelDecision) -> String {
     match d {
         Pass { intent } => format!("Pass:{}", stable_intent(intent)),
         Block { reason } => format!("Block:{}", stable_block_reason(reason)),
-        Fault { code }   => format!("Fault:{}", stable_fault_code(code)),
+        Fault { code } => format!("Fault:{}", stable_fault_code(code)),
     }
 }
 
 fn stable_intent(i: &firewall_core::MatchedIntent) -> &'static str {
     use firewall_core::MatchedIntent::*;
     match i {
-        QuestionFactual              => "QuestionFactual",
-        QuestionCausal               => "QuestionCausal",
-        QuestionComparative          => "QuestionComparative",
-        TaskCodeGeneration           => "TaskCodeGeneration",
-        TaskTextSummarisation        => "TaskTextSummarisation",
-        TaskTranslation              => "TaskTranslation",
-        TaskDataExtraction           => "TaskDataExtraction",
-        ConversationalGreeting       => "ConversationalGreeting",
+        QuestionFactual => "QuestionFactual",
+        QuestionCausal => "QuestionCausal",
+        QuestionComparative => "QuestionComparative",
+        TaskCodeGeneration => "TaskCodeGeneration",
+        TaskTextSummarisation => "TaskTextSummarisation",
+        TaskTranslation => "TaskTranslation",
+        TaskDataExtraction => "TaskDataExtraction",
+        ConversationalGreeting => "ConversationalGreeting",
         ConversationalAcknowledgement => "ConversationalAcknowledgement",
-        SystemMetaQuery              => "SystemMetaQuery",
-        StructuredOutput             => "StructuredOutput",
-        AgenticToolUse               => "AgenticToolUse",
-        ControlledCreative           => "ControlledCreative",
-        SemanticViolation { .. }     => "SemanticViolation",
+        SystemMetaQuery => "SystemMetaQuery",
+        StructuredOutput => "StructuredOutput",
+        AgenticToolUse => "AgenticToolUse",
+        ControlledCreative => "ControlledCreative",
+        SemanticViolation { .. } => "SemanticViolation",
     }
 }
 
 fn stable_fault_code(c: &firewall_core::FaultCode) -> &'static str {
     use firewall_core::FaultCode::*;
     match c {
-        WatchdogFired            => "WatchdogFired",
-        InternalPanic            => "InternalPanic",
-        RegexCompilationFailure  => "RegexCompilationFailure",
+        WatchdogFired => "WatchdogFired",
+        InternalPanic => "InternalPanic",
+        RegexCompilationFailure => "RegexCompilationFailure",
     }
 }
 
@@ -267,9 +297,8 @@ pub async fn firewall_evaluate_messages(
     base_sequence: String,
 ) -> Result<JsConversationVerdict> {
     // OC-01 guard — same as firewall_evaluate.
-    let init_ok: &std::result::Result<(), String> = INIT_RESULT.get_or_init(|| {
-        init().map_err(|e: firewall_core::FirewallInitError| e.to_string())
-    });
+    let init_ok: &std::result::Result<(), String> = INIT_RESULT
+        .get_or_init(|| init().map_err(|e: firewall_core::FirewallInitError| e.to_string()));
     if let Err(e) = init_ok {
         return Err(napi::Error::from_reason(format!(
             "firewall not initialised (OC-01): {}. Call firewall_init() at startup.",
@@ -279,34 +308,48 @@ pub async fn firewall_evaluate_messages(
 
     let core_messages: Vec<ChatMessage> = messages
         .into_iter()
-        .map(|m| ChatMessage { role: m.role, content: m.content })
+        .map(|m| ChatMessage {
+            role: m.role,
+            content: m.content,
+        })
         .collect();
 
-    let base_sequence: u64 = base_sequence
-        .parse()
-        .map_err(|_| napi::Error::from_reason(
-            format!("Invalid base sequence number: '{}'. Expected a decimal number.", base_sequence)
-        ))?;
+    let base_sequence: u64 = base_sequence.parse().map_err(|_| {
+        napi::Error::from_reason(format!(
+            "Invalid base sequence number: '{}'. Expected a decimal number.",
+            base_sequence
+        ))
+    })?;
 
     let cv = evaluate_messages(&core_messages, base_sequence);
 
-    let js_verdicts: Vec<JsVerdict> = cv.verdicts.iter().map(|v| {
-        let block_reason = v.audit.block_reason
-            .as_ref()
-            .map(stable_block_reason)
-            .unwrap_or_default();
-        JsVerdict {
-            kind: stable_verdict_kind(&v.kind),
-            is_pass: v.is_pass(),
-            channel_a_decision: stable_channel_decision(&v.channel_a.decision),
-            channel_b_decision: stable_channel_decision(&v.channel_b.decision),
-            elapsed_us: v.audit.total_elapsed_us.min(u32::MAX as u64) as u32,
-            input_hash: v.audit.input_hash.clone(),
-            sequence: v.audit.sequence.to_string(),
-            tenant_id: v.audit.tenant_id.clone().unwrap_or_else(|| "default".into()),
-            block_reason,
-        }
-    }).collect();
+    let js_verdicts: Vec<JsVerdict> = cv
+        .verdicts
+        .iter()
+        .map(|v| {
+            let block_reason = v
+                .audit
+                .block_reason
+                .as_ref()
+                .map(stable_block_reason)
+                .unwrap_or_default();
+            JsVerdict {
+                kind: stable_verdict_kind(&v.kind),
+                is_pass: v.is_pass(),
+                channel_a_decision: stable_channel_decision(&v.channel_a.decision),
+                channel_b_decision: stable_channel_decision(&v.channel_b.decision),
+                elapsed_us: v.audit.total_elapsed_us.min(u32::MAX as u64) as u32,
+                input_hash: v.audit.input_hash.clone(),
+                sequence: v.audit.sequence.to_string(),
+                tenant_id: v
+                    .audit
+                    .tenant_id
+                    .clone()
+                    .unwrap_or_else(|| "default".into()),
+                block_reason,
+            }
+        })
+        .collect();
 
     Ok(JsConversationVerdict {
         is_pass: cv.is_pass,
@@ -321,9 +364,8 @@ pub async fn firewall_evaluate_output(
     response: String,
     sequence: String,
 ) -> Result<JsEgressVerdict> {
-    let init_ok: &std::result::Result<(), String> = INIT_RESULT.get_or_init(|| {
-        init().map_err(|e: firewall_core::FirewallInitError| e.to_string())
-    });
+    let init_ok: &std::result::Result<(), String> = INIT_RESULT
+        .get_or_init(|| init().map_err(|e: firewall_core::FirewallInitError| e.to_string()));
     if let Err(e) = init_ok {
         return Err(napi::Error::from_reason(format!(
             "firewall not initialised (OC-01): {}. Call firewall_init() at startup.",
@@ -331,22 +373,23 @@ pub async fn firewall_evaluate_output(
         )));
     }
 
-    let sequence: u64 = sequence
-        .parse()
-        .map_err(|_| napi::Error::from_reason(
-            format!("Invalid sequence number: '{}'. Expected a decimal number.", sequence)
-        ))?;
+    let sequence: u64 = sequence.parse().map_err(|_| {
+        napi::Error::from_reason(format!(
+            "Invalid sequence number: '{}'. Expected a decimal number.",
+            sequence
+        ))
+    })?;
 
-    let prompt = PromptInput::new(prompt)
-        .map_err(|e| napi::Error::from_reason(format!("invalid prompt for egress evaluation: {}", stable_block_reason(&e))))?;
-    let ev = evaluate_output(&prompt, &response, sequence)
-        .map_err(napi::Error::from_reason)?;
+    let prompt = PromptInput::new(prompt).map_err(|e| {
+        napi::Error::from_reason(format!(
+            "invalid prompt for egress evaluation: {}",
+            stable_block_reason(&e)
+        ))
+    })?;
+    let ev = evaluate_output(&prompt, &response, sequence).map_err(napi::Error::from_reason)?;
 
     let (input_hash, seq) = match &ev.audit {
-        Some(audit) => (
-            audit.input_hash.clone(),
-            audit.sequence.to_string(),
-        ),
+        Some(audit) => (audit.input_hash.clone(), audit.sequence.to_string()),
         None => (String::new(), sequence.to_string()),
     };
 

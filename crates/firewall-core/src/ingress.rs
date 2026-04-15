@@ -46,7 +46,7 @@ fn synthesize_block_verdict(
             None,
             ingested_at_ns,
             decided_at_ns,
-            ((decided_at_ns - ingested_at_ns) / 1_000).min(u64::MAX as u128) as u64,
+            (decided_at_ns.saturating_sub(ingested_at_ns) / 1_000).min(u64::MAX as u128) as u64,
             None,
         ),
     }
@@ -61,7 +61,13 @@ pub(crate) fn pre_scan_block(
     raw_byte_pre_scan(raw.as_bytes()).map(|detail| {
         let reason = BlockReason::MalformedInput { detail };
         let decided_ns = now_ns();
-        synthesize_block_verdict(sequence, reason, sha256_hex(raw), ingested_at_ns, decided_ns)
+        synthesize_block_verdict(
+            sequence,
+            reason,
+            sha256_hex(raw),
+            ingested_at_ns,
+            decided_ns,
+        )
     })
 }
 

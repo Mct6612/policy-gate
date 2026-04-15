@@ -108,7 +108,6 @@ fn get_programming_keywords() -> &'static Vec<&'static str> {
             "finally",
             "throw",
             "new",
-            "delete",
             "typeof",
             "instanceof",
             "package",
@@ -144,7 +143,6 @@ fn get_programming_keywords() -> &'static Vec<&'static str> {
             "self",
             "this",
             "super",
-            "null",
             "undefined",
             "std",
             "cout",
@@ -183,16 +181,17 @@ fn find_leakage(prompt: &str, response: &str) -> Option<String> {
     };
     let lower_response = normalised_response.to_lowercase();
 
-    if lower_prompt.len() < MIN_PROMPT_LEN || lower_response.len() < WINDOW_SIZE {
+    let prompt_chars: Vec<char> = lower_prompt.chars().collect();
+    if prompt_chars.len() < MIN_PROMPT_LEN || lower_response.chars().count() < WINDOW_SIZE {
         return None;
     }
 
-    for i in 0..=(lower_prompt.len() - WINDOW_SIZE) {
-        let chunk = &lower_prompt[i..i + WINDOW_SIZE];
-        if lower_response.contains(chunk) {
-            // New Significance Check: Only block if the matched chunk is not just boilerplate code
-            if is_significant(chunk) {
-                return Some(chunk.to_string());
+    for window in prompt_chars.windows(WINDOW_SIZE) {
+        let chunk: String = window.iter().collect();
+        if lower_response.contains(chunk.as_str()) {
+            // Significance Check: Only block if the matched chunk is not just boilerplate code
+            if is_significant(&chunk) {
+                return Some(chunk);
             }
         }
     }

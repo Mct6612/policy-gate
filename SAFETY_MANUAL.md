@@ -21,6 +21,7 @@ Recent revisions:
 
 | Rev  | Date    | Current relevance |
 | ---- | ------- | ----------------- |
+| 2.29 | 2026-04 | **Tool-Schema Validation for AgenticToolUse**: Added `allowed_tools` configuration option for explicit tool whitelisting. New `BlockReason::ToolNotAllowed` variant. Python binding exposes `validate_tools()` API. Supports LangGraph/CrewAI agent protection. New Safety Requirement SR-025, Hazard H-20, Operational Constraint OC-14. |
 | 2.28 | 2026-04 | **Post-audit hardening alignment**: Audit initialization now fails closed if HMAC integrity cannot be established. WASM hosts must inject the audit HMAC key before init. Persistent audit key material and chain-seal state are stored separately (`audit_hmac_key.seal` and `audit_chain.seal`). Proxy admin routes (`/metrics`, `/reload`) are restricted to loopback callers. Node/TS sequence transport standardized on decimal-string over N-API with `bigint` in the wrapper. |
 | 2.27 | 2026-04 | **Fast-Semantic 2.0 Expansion**: Increased to 8 centroids (added `PhishingAids` and `DependencyConfusion`). Calibrated default `semantic_threshold` to 0.60 for improved recall. **API Hardening**: Enforced mutable borrowing for `PromptInput` to ensure stateful persistence of matched intents and normalization state. |
 | 2.26 | 2026-04 | **SA-080: Contextual Anchor Validation**: Hardened intent-persistence across the ingress-egress boundary. Ingress matched intent now determines the `EgressAnchor` (e.g. `TaskTranslation` -> `TextOnly`). Updated Channel F to block code fragments in text-only contexts. |
@@ -31,8 +32,6 @@ Recent revisions:
 | 2.21 | 2026-04 | High-Performance Scaling: Migration to `RegexSet` ($O(1)$ matching) and LRU Caching. Staged Hot-Reload with pre-flight validation. Semantic Hardening: Fast-Semantic 2.0 (128-dim sparse embedding) with advisory/enforcement thresholds. |
 | 2.20 | 2026-03 | Code-structure alignment: init state and startup logic moved to `crates/firewall-core/src/init.rs`; public API remains in `lib.rs`. |
 | 2.19 | 2026-03 | Session-aware layer added with `evaluate_with_session()` and session analysis / cleanup behavior. |
-| 2.18 | 2026-03 | Documentation and verification alignment update for semantic opt-in, conformance corpus, and native wrapper flow. |
-| 2.17 | 2026-03 | Recent hardening round for HTML/JS/SVG/MathML blocking and multilingual framing patterns. |
 
 Older action-by-action entries remain available in the external history file.
 
@@ -868,7 +867,10 @@ Session layer significantly improves multi-turn attack detection but remains adv
 | SR-022             | H-14   | Build-Time Init Token / Race-to-Init prevent (SA-073)            | `init.rs::init_with_token`                                 | —                    | `init_requires_token`                             |
 | SR-023             | H-18   | Per-tenant `on_diagnostic_agreement = fail_closed` escalates DA to Block | `config.rs::OnDiagnosticAgreement`, `orchestrator.rs` | PO-V10               | `on_diagnostic_agreement_fail_closed_blocks`      |
 | SR-024             | H-19   | Mandatory overlap buffer (256 bytes) across chunks using Aho-Corasick | `stream_scanner.rs`                                        | —                    | `stream_scanner_detects_split_pattern`            |
+| SR-025             | H-20   | Tool-Schema Validation via `validate_tools()` API and `ToolNotAllowed` block | `config.rs::allowed_tools`, `firewall-pyo3/src/lib.rs` | —                    | `validate_tools_rejects_unauthorized_tool`        |
+| SR-026             | H-21   | Contextual Anchor Validation (SA-080) enforces egress constraints based on ingress intent | `types.rs::EgressAnchor`, `egress.rs`                      | —                    | `anchor_violation_blocks_code_in_text_only`       |
 
+---
 
 ## 7.9 Operation Modes (Shadow Mode)
 

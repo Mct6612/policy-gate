@@ -1,0 +1,37 @@
+# Example firewall.toml for LangGraph Integration PoC
+# Place this as 'firewall.toml' in the project root to test the PoC
+
+# ─── Tool-Schema Validation ───────────────────────────────────────────────────
+# Liste der erlaubten Tools für AgenticToolUse
+# Tools außerhalb dieser Liste werden mit 'ToolNotAllowed' geblockt
+
+allowed_tools = [
+    "weather_tool",      # Erlaubt: Wetter-Abfragen
+    "calculator_tool",   # Erlaubt: Mathematische Berechnungen
+    "search_tool",       # Erlaubt: Web-Suche (Mock)
+    # "delete_database_tool"  # NICHT erlaubt - destruktiv!
+]
+
+# ─── Voter-Verhalten ─────────────────────────────────────────────────────────
+# fail_closed = Hart blockieren bei Intent-Diskrepanz (empfohlen für Agenten)
+# pass_and_log = Durchlassen aber loggen (für Debugging)
+
+on_diagnostic_agreement = "fail_closed"
+
+# ─── Audit-Konfiguration ───────────────────────────────────────────────────────
+# detailed = Volle Channel-Details für Debugging
+# basic = Nur Block-Reason (default)
+
+audit_detail_level = "detailed"
+
+# ─── Context Window für Multi-Turn ─────────────────────────────────────────────
+# Wie viele vorherige Nachrichten werden für Session-Awareness berücksichtigt
+
+context_window = 5
+
+# ─── Shadow Mode (für Testing) ───────────────────────────────────────────────────
+# shadow_mode = true  # Nicht blockieren, nur loggen (für PoC-Testing)
+
+# ─── Semantic Analysis (optional) ──────────────────────────────────────────────
+# semantic_threshold = 0.70
+# semantic_enforce_threshold = 1.0  # 1.0 = nur taggen, nicht blockieren

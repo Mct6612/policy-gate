@@ -54,10 +54,23 @@ fn audit_detail_level(config: Option<&config::FirewallConfig>) -> AuditDetailLev
 }
 
 /// Synthesises a block verdict for unknown/anonymous tenants.
-fn unknown_tenant_block(input: &PromptInput, sequence: u64, now: u128, tenant_id: Option<String>) -> Verdict {
+fn unknown_tenant_block(
+    input: &PromptInput,
+    sequence: u64,
+    now: u128,
+    tenant_id: Option<String>,
+) -> Verdict {
     let reason = BlockReason::UnknownTenant;
     let block = crate::types::ChannelResult {
         channel: crate::types::ChannelId::A,
+        decision: ChannelDecision::Block {
+            reason: reason.clone(),
+        },
+        elapsed_us: 0,
+        similarity: None,
+    };
+    let block_b = crate::types::ChannelResult {
+        channel: crate::types::ChannelId::B,
         decision: ChannelDecision::Block {
             reason: reason.clone(),
         },
@@ -71,12 +84,14 @@ fn unknown_tenant_block(input: &PromptInput, sequence: u64, now: u128, tenant_id
         crate::types::AdvisoryTag::None,
         now,
         0,
-        block.clone(),
         block,
+        block_b,
         #[cfg(feature = "semantic")]
         crate::types::ChannelResult {
             channel: crate::types::ChannelId::D,
-            decision: crate::types::ChannelDecision::Pass { intent: crate::types::MatchedIntent::QuestionFactual },
+            decision: crate::types::ChannelDecision::Pass {
+                intent: crate::types::MatchedIntent::QuestionFactual,
+            },
             elapsed_us: 0,
             similarity: None,
         },
@@ -104,7 +119,8 @@ pub(crate) fn evaluate(
     }
 
     // If no specific tenant provided, only allow access if anonymous is enabled (or not explicitly disabled) in the default policy.
-    if tenant_id.is_none() && config.as_ref().and_then(|c| c.allow_anonymous_tenants) == Some(false) {
+    if tenant_id.is_none() && config.as_ref().and_then(|c| c.allow_anonymous_tenants) == Some(false)
+    {
         return unknown_tenant_block(&input, sequence, start_ns, None);
     }
 
@@ -112,12 +128,15 @@ pub(crate) fn evaluate(
     let mut channel_b = ChannelB::evaluate(&input, config.as_ref());
 
     #[cfg(feature = "semantic")]
-    let (s_tag, s_enf, s_mode) = config.as_ref()
-        .map(|c| (
-            c.semantic_threshold.unwrap_or(0.60), 
-            c.semantic_enforce_threshold.unwrap_or(1.0),
-            c.engine_mode.as_deref().unwrap_or("fast")
-        ))
+    let (s_tag, s_enf, s_mode) = config
+        .as_ref()
+        .map(|c| {
+            (
+                c.semantic_threshold.unwrap_or(0.60),
+                c.semantic_enforce_threshold.unwrap_or(1.0),
+                c.engine_mode.as_deref().unwrap_or("fast"),
+            )
+        })
         .unwrap_or((0.60, 1.0, "fast"));
 
     #[cfg(feature = "semantic")]
@@ -135,7 +154,8 @@ pub(crate) fn evaluate(
     // This is the correct hardening posture for high-sensitivity tenants
     // (e.g. financial data, PII) where any ambiguity must fail closed.
     if verdict_kind == VerdictKind::DiagnosticAgreement {
-        let policy = config.as_ref()
+        let policy = config
+            .as_ref()
             .map(|c| c.on_diagnostic_agreement)
             .unwrap_or(OnDiagnosticAgreement::PassAndLog);
         if policy == OnDiagnosticAgreement::FailClosed {
@@ -151,7 +171,7 @@ pub(crate) fn evaluate(
     }
 
     // SA-080: Extract and persist the winning intent for context-aware egress anchors.
-    // In a 1oo2 system, if they disagree on intent but both pass, we log DiagnosticDisagreement.
+    // In a 1oo2 system, if they disagree on intent but both pass, we log DiagnosticAgreement.
     // We prefer Channel A's intent for the anchor, as it's the primary system FSM.
     let final_intent = match (&channel_a.decision, &channel_b.decision) {
         (ChannelDecision::Pass { intent }, _) => Some(intent.clone()),
@@ -160,15 +180,39 @@ pub(crate) fn evaluate(
     };
     input.matched_intent = final_intent;
 
-    apply_profile_filter(&mut verdict_kind, &mut channel_a, &mut channel_b, config.as_ref());
+    apply_profile_filter(
+        &mut verdict_kind,
+        &mut channel_a,
+        &mut channel_b,
+        config.as_ref(),
+    );
 
-    if config.as_ref().and_then(|c| c.shadow_mode).unwrap_or(false) 
-        && !matches!(verdict_kind, VerdictKind::Pass | VerdictKind::DiagnosticAgreement) 
+    if config.as_ref().and_then(|c| c.shadow_mode).unwrap_or(false)
+        && !matches!(
+            verdict_kind,
+            VerdictKind::Pass | VerdictKind::DiagnosticAgreement
+        )
     {
         verdict_kind = VerdictKind::ShadowPass;
     }
 
-    let advisory_opinion = advisory::ChannelC::evaluate(&input.text);
+    let mut advisory_opinion = advisory::ChannelC::evaluate(&input.text);
+
+    // SA-079: Enhance advisory opinion with structured input analysis.
+    // If the input contains structured data (JSON/YAML/templates) with variable
+    // substitution patterns or sensitive field names, escalate to Suspicious.
+    // This is advisory-only — does not affect the core pass/block verdict.
+    if matches!(advisory_opinion, advisory::AdvisoryOpinion::Safe) {
+        if let Some(meta) = crate::structured::detect_structured_input(input) {
+            if meta.has_variable_refs || !meta.sensitive_field_names.is_empty() {
+                advisory_opinion = advisory::AdvisoryOpinion::Suspicious {
+                    score: 1,
+                    reason: "structured input with variable refs or sensitive field names (SA-079)",
+                };
+            }
+        }
+    }
+
     let advisory_event = advisory::ChannelC::audit_event(&advisory_opinion, &verdict_kind);
     let advisory_tag = build_advisory_tag(&advisory_event);
 

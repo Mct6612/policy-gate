@@ -28,7 +28,8 @@ pub struct PromptInput {
 impl PromptInput {
     /// Normalise and construct a PromptInput.
     /// Returns `Err(BlockReason::ExceededMaxLength)` if the input exceeds 8192 bytes
-    /// after NFC normalisation and trimming (SA-010: hard reject, no silent truncation).
+    /// after NFKC normalisation, NFD decomposition, Mn category stripping, and NFC
+    /// recomposition and trimming (SA-010: hard reject, no silent truncation).
     pub fn new(raw: impl Into<String>) -> Result<Self, BlockReason> {
         let raw = raw.into();
         // Capture ingested_at_ns BEFORE normalisation so the timestamp reflects
@@ -327,10 +328,10 @@ impl PromptInput {
                 ("quien es ", "who is "),
                 ("¿quién es ", "who is "),
                 ("¿quien es ", "who is "),
-                ("qué es ", "who is "),
-                ("que es ", "who is "),
-                ("¿qué es ", "who is "),
-                ("¿que es ", "who is "),
+                ("qué es ", "what is "),
+                ("que es ", "what is "),
+                ("¿qué es ", "what is "),
+                ("¿que es ", "what is "),
                 ("dónde está ", "where is "),
                 ("donde esta ", "where is "),
                 ("¿dónde está ", "where is "),
@@ -928,6 +929,13 @@ pub enum BlockReason {
     AnchorViolation {
         detail: String,
     },
+    /// Tool-Schema-Validation: A requested tool is not in the allowed tools whitelist.
+    /// This is produced when `allowed_tools` is configured and the user/agent attempts
+    /// to invoke a tool not present in that list.
+    ToolNotAllowed {
+        tool_name: String,
+        allowed_tools: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1168,13 +1176,23 @@ impl AuditEntry {
 /// SA-069: Egress blocking reason.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum EgressBlockReason {
-    SystemPromptLeakage { detail: String },
-    PiiDetected { pii_type: String },
-    HarmfulContent { category: String },
+    SystemPromptLeakage {
+        detail: String,
+    },
+    PiiDetected {
+        pii_type: String,
+    },
+    HarmfulContent {
+        category: String,
+    },
     /// SA-080: The output violated the expected contextual anchor.
     /// e.g. code found when TextOnly was expected.
-    AnchorViolation { detail: String },
-    Other { detail: String },
+    AnchorViolation {
+        detail: String,
+    },
+    Other {
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for EgressBlockReason {

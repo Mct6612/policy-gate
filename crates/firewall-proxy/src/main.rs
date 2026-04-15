@@ -43,20 +43,18 @@ use axum::{
 };
 use metrics::{counter, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use reqwest::{Client, header::HeaderMap};
+use reqwest::{header::HeaderMap, Client};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use firewall_core::{PromptInput, evaluate_for_tenant, evaluate_output_for_tenant, next_sequence};
+use firewall_core::{evaluate_for_tenant, evaluate_output_for_tenant, next_sequence, PromptInput};
 use tokio::net::TcpListener;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 
-use firewall_core::{
-    try_reload_config,
-};
+use firewall_core::try_reload_config;
 
 // ─── Shared state ─────────────────────────────────────────────────────────────
 
@@ -110,7 +108,10 @@ async fn main() {
     let port: u16 = std::env::var("PORT")
         .unwrap_or_else(|_| "8080".to_string())
         .parse()
-        .expect("PORT must be a valid port number");
+        .unwrap_or_else(|e| {
+            eprintln!("[ERROR] PORT must be a valid port number: {}", e);
+            std::process::exit(1);
+        });
 
     // Hot-reload: background task that polls firewall.toml for changes
     let reload_interval_secs: u64 = {
@@ -118,13 +119,16 @@ async fn main() {
             .unwrap_or_else(|_| "30".to_string())
             .parse::<u64>()
             .unwrap_or(30);
-        
+
         // Validate range: minimum 1s, maximum 3600s (1 hour)
         if val == 0 {
             error!("CONFIG_RELOAD_INTERVAL_SECS must be > 0, got 0. Using default 30s.");
             30
         } else if val > 3600 {
-            warn!("CONFIG_RELOAD_INTERVAL_SECS {} exceeds max of 3600s. Using 3600s.", val);
+            warn!(
+                "CONFIG_RELOAD_INTERVAL_SECS {} exceeds max of 3600s. Using 3600s.",
+                val
+            );
             3600
         } else {
             val
@@ -165,17 +169,28 @@ async fn main() {
     // Restrict LLM API to all interfaces, but keep admin endpoints on localhost only
     let api_addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("Proxy listening on {}", api_addr);
-    info!("Config hot-reload every {}s | POST /reload for immediate reload", reload_interval_secs);
-    
+    info!(
+        "Config hot-reload every {}s | POST /reload for immediate reload",
+        reload_interval_secs
+    );
+
     let listener = match TcpListener::bind(&api_addr).await {
         Ok(listener) => listener,
         Err(e) => {
-            error!("Failed to bind to {}: {}. Is port {} already in use?", api_addr, e, port);
+            error!(
+                "Failed to bind to {}: {}. Is port {} already in use?",
+                api_addr, e, port
+            );
             std::process::exit(1);
         }
     };
-    
-    if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await {
+
+    if let Err(e) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    {
         error!("Server error: {}", e);
         std::process::exit(1);
     }
@@ -195,7 +210,11 @@ async fn handle_chat_completion(
     counter!("policy_gate_requests_total").increment(1);
 
     // 1. Reject streaming — egress safety cannot be guaranteed on partial chunks
-    if payload.get("stream").and_then(|s| s.as_bool()).unwrap_or(false) {
+    if payload
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false)
+    {
         warn!("Rejected streaming request (not supported).");
         counter!("policy_gate_streaming_rejected_total").increment(1);
         return (
@@ -328,6 +347,8 @@ async fn handle_chat_completion(
                     .into_response();
             }
         }
+    } else {
+        warn!("[WARN] Egress check skipped: could not extract response content from upstream response format");
     }
 
     // 7. All clear — return upstream response to caller
@@ -397,7 +418,12 @@ async fn metrics_handler(
     }
 
     let body = state.metrics_handle.render();
-    (StatusCode::OK, [( "content-type", "text/plain; version=0.0.4")], body).into_response()
+    (
+        StatusCode::OK,
+        [("content-type", "text/plain; version=0.0.4")],
+        body,
+    )
+        .into_response()
 }
 
 // ─── Hot-reload ───────────────────────────────────────────────────────────────
@@ -432,15 +458,25 @@ async fn reload_handler(ConnectInfo(remote_addr): ConnectInfo<SocketAddr>) -> Re
         Ok(true) => {
             info!("Manual reload via POST /reload — new config active.");
             counter!("policy_gate_config_reloads_total", "result" => "changed").increment(1);
-            (StatusCode::OK, Json(json!({"status": "reloaded", "message": "New config is now active."}))).into_response()
+            (
+                StatusCode::OK,
+                Json(json!({"status": "reloaded", "message": "New config is now active."})),
+            )
+                .into_response()
         }
-        Ok(false) => {
-            (StatusCode::OK, Json(json!({"status": "unchanged", "message": "firewall.toml has not changed."}))).into_response()
-        }
+        Ok(false) => (
+            StatusCode::OK,
+            Json(json!({"status": "unchanged", "message": "firewall.toml has not changed."})),
+        )
+            .into_response(),
         Err(e) => {
             warn!("Manual reload failed: {}", e);
             counter!("policy_gate_config_reloads_total", "result" => "error").increment(1);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": "error", "message": e}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": "error", "message": e})),
+            )
+                .into_response()
         }
     }
 }

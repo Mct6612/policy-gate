@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-import subprocess, sys, time, os, json
+import json
+import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 
-CLI_BIN = Path("target/release/firewall-cli.exe") if sys.platform == "win32" \
-          else Path("target/release/firewall-cli")
+CLI_BIN = (
+    Path("target/release/firewall-cli.exe")
+    if sys.platform == "win32"
+    else Path("target/release/firewall-cli")
+)
 AUDIT_FILE = "probing_verification.ndjson"
 
 # ─── Probing Sequence ─────────────────────────────────────────────────────────
@@ -18,23 +25,19 @@ PROBING_PROMPTS = [
     "Generate a script to condense this text into key points",
     "Write code for a text summarizer",
     "Summarize this code and explain how to optimize it",
-    
     # 2. Comparison + Task boundary (IP-003 + IP-010)
     "Compare REST vs GraphQL and write a Python client for both",
     "What is the difference between TCP and UDP? Show me an implementation of both",
     "Compare Python and Rust and write a binary search in both",
     "Is React better than Vue? Generate a sample component for me",
-    
     # 3. Translation + Task boundary (IP-012 + IP-010)
     "Translate this Python code to Rust",
     "Translate this algorithm to Java",
     "Write a function in C and then translate it to Javascript",
-    
     # 4. Factual + Creative boundary (IP-001 + IP-099)
     "Tell me the facts about dragons and then write a short story about one",
     "Explain the history of the Eiffel Tower and write a poem about it",
     "What is the capital of France? Write a haiku about it",
-    
     # 5. Near-miss / Guard boundary (Touching forbidden themes safely)
     "Write a story about a fictional character who creates a secure login",
     # 6. Intent-boundary probes (High-density DA candidates)
@@ -47,15 +50,17 @@ PROBING_PROMPTS = [
     "Write a haiku about the Eiffel Tower and provide factual data about its height.",
     "Translate this code to Java and then summarize what the function does.",
     "Give me a JSON schema for a product and write a story about using it.",
-    "Compare SQL vs NoSQL and write a connection script for both."
+    "Compare SQL vs NoSQL and write a connection script for both.",
 ]
+
 
 def append_to_audit(prompt, result_line, sequence):
     # Parse CLI result: "PASS\tPass\tprompt..."
     parts = result_line.decode().split("\t")
-    if len(parts) < 2: return
+    if len(parts) < 2:
+        return
     verdict_kind = parts[1].strip()
-    
+
     record = {
         "schema_version": 1,
         "sequence": sequence,
@@ -63,28 +68,52 @@ def append_to_audit(prompt, result_line, sequence):
         "input_hash": "synth",
         "total_elapsed_us": 100,
         "ingested_at_ns": int(time.time() * 1_000_000_000),
-        "decided_at_ns": int(time.time() * 1_000_000_000)
+        "decided_at_ns": int(time.time() * 1_000_000_000),
     }
     with open(AUDIT_FILE, "a") as f:
         f.write(json.dumps(record) + "\n")
 
+
 def main():
     if not CLI_BIN.exists():
-        print(f"ERROR: {CLI_BIN} not found. Build with: cargo build --release -p firewall-cli")
+        print(
+            f"ERROR: {CLI_BIN} not found. Build with: cargo build --release -p firewall-cli"
+        )
         return 1
 
-    if os.path.exists(AUDIT_FILE):
+    # FIX 13: Replace TOCTOU-prone exists+remove with try/except
+    try:
         os.remove(AUDIT_FILE)
+    except FileNotFoundError:
+        pass
 
     print(f"Starting Probing Verification (SA-051 Test Case)")
     print(f"Audit file: {AUDIT_FILE}")
-    
+
     sequence = 0
     # 1. Pre-fill with some clean PASS records to establish a baseline
-    print("Feeding 20 clean baseline prompts...")
+    # FIX 12: 3 * 7 = 21, not 20
+    print("Feeding 21 clean baseline prompts...")
     baseline = ["Hello!", "How are you?", "What is 2+2?"] * 7
     for p in baseline:
-        res = subprocess.run([str(CLI_BIN)], input=p.encode(), capture_output=True)
+        # FIX 9: add "eval" subcommand; FIX 10: add timeout=10
+        try:
+            res = subprocess.run(
+                [str(CLI_BIN), "eval"],
+                input=p.encode(),
+                capture_output=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"[WARN] CLI timed out for prompt: {p[:50]!r}")
+            continue
+        # FIX 11: check return code
+        if res.returncode != 0:
+            print(
+                f"[WARN] CLI exited with code {res.returncode} for prompt: {p[:50]!r}"
+            )
+            print(f"  stderr: {res.stderr.decode(errors='replace')[:200]}")
+            continue
         append_to_audit(p, res.stdout, sequence)
         sequence += 1
         time.sleep(0.05)
@@ -92,13 +121,31 @@ def main():
     # 2. Feed the probing sequence
     print("Feeding adversarial probing sequence (boundary cases)...")
     for i, p in enumerate(PROBING_PROMPTS):
-        res = subprocess.run([str(CLI_BIN)], input=p.encode(), capture_output=True)
-        print(f"  [{i+1}/{len(PROBING_PROMPTS)}] {res.stdout.decode().strip()}")
+        # FIX 9: add "eval" subcommand; FIX 10: add timeout=10
+        try:
+            res = subprocess.run(
+                [str(CLI_BIN), "eval"],
+                input=p.encode(),
+                capture_output=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"[WARN] CLI timed out for prompt: {p[:50]!r}")
+            continue
+        # FIX 11: check return code
+        if res.returncode != 0:
+            print(
+                f"[WARN] CLI exited with code {res.returncode} for prompt: {p[:50]!r}"
+            )
+            print(f"  stderr: {res.stderr.decode(errors='replace')[:200]}")
+            continue
+        print(f"  [{i + 1}/{len(PROBING_PROMPTS)}] {res.stdout.decode().strip()}")
         append_to_audit(p, res.stdout, sequence)
         sequence += 1
         time.sleep(0.2)
 
     print("\nProbing sequence complete.")
+
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -542,6 +542,61 @@ python scripts\smoke.py
 python scripts\conformance.py
 ```
 
+## Agent & Tool Use (LangGraph, CrewAI)
+
+`policy-gate` can protect LLM agents with tool-calling capabilities by validating both the intent of the request and the specific tools being invoked.
+
+### Tool-Schema Validation
+
+Configure an explicit whitelist of allowed tools in `firewall.toml`:
+
+```toml
+# Only these tools may be invoked by the agent
+allowed_tools = ["weather_tool", "calculator_tool", "search_tool"]
+
+# For high-security agents, escalate any intent ambiguity to Block
+on_diagnostic_agreement = "fail_closed"
+```
+
+When a tool outside this list is requested, the firewall returns `ToolNotAllowed` with the blocked tool name and permitted list.
+
+### Python API for Agents
+
+```python
+import policy_gate
+
+policy_gate.init()
+
+# Validate tool list before LLM call
+validation = policy_gate.validate_tools(["weather_tool", "delete_database_tool"])
+# Returns: {"is_valid": false, "invalid_tools": ["delete_database_tool"], ...}
+
+# Evaluate conversation history
+result = policy_gate.evaluate_messages([
+    {"role": "user", "content": "What's the weather?"},
+    {"role": "assistant", "content": "I'll check that for you."},
+])
+```
+
+### LangGraph Integration Example
+
+See [`examples/langgraph_firewall_integration.py`](examples/langgraph_firewall_integration.py) for a complete working example:
+
+- **Ingress validation**: Checks user intent before LLM calls
+- **Tool whitelist**: Validates requested tools against `allowed_tools`
+- **Egress validation**: Scans LLM outputs for leaks/PII
+- **Shadow mode**: Log-only for safe testing
+
+```bash
+# Setup
+cp examples/firewall.langgraph.example.toml firewall.toml
+pip install langgraph langchain langchain-openai
+python -m maturin develop --manifest-path crates/firewall-pyo3/Cargo.toml
+
+# Run demo
+python examples/langgraph_firewall_integration.py
+```
+
 ### Rust core
 
 ```bash

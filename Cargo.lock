@@ -617,8 +617,6 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -657,7 +655,6 @@ version = "0.1.0"
 dependencies = [
  "firewall-core",
  "pyo3",
- "serde_json",
 ]
 
 [[package]]

@@ -52,7 +52,6 @@ pub enum StructuredFormat {
 ///
 /// Returns `Some(StructuredMetadata)` if the input is detected as JSON, YAML,
 /// or template-based. Returns `None` for plain text or on watchdog timeout.
-#[allow(dead_code)]
 pub fn detect_structured_input(input: &PromptInput) -> Option<StructuredMetadata> {
     let start = Instant::now();
     let text = &input.text;
@@ -170,14 +169,12 @@ fn parse_json_structure(text: &str, start: &Instant) -> Option<StructuredMetadat
             '"' => in_string = !in_string,
             '{' if !in_string => {
                 brace_depth += 1;
-                max_nesting_depth =
-                    max_nesting_depth.max((brace_depth + bracket_depth) as usize);
+                max_nesting_depth = max_nesting_depth.max((brace_depth + bracket_depth) as usize);
             }
             '}' if !in_string => brace_depth = brace_depth.saturating_sub(1),
             '[' if !in_string => {
                 bracket_depth += 1;
-                max_nesting_depth =
-                    max_nesting_depth.max((brace_depth + bracket_depth) as usize);
+                max_nesting_depth = max_nesting_depth.max((brace_depth + bracket_depth) as usize);
             }
             ']' if !in_string => bracket_depth = bracket_depth.saturating_sub(1),
             ':' if !in_string => field_count += 1,
@@ -211,12 +208,7 @@ fn parse_template_structure(text: &str, start: &Instant) -> Option<StructuredMet
     let mut sensitive_field_names = Vec::new();
 
     // Standard open/close pairs
-    let pairs: &[(&str, &str)] = &[
-        ("{{", "}}"),
-        ("{%", "%}"),
-        ("<%", "%>"),
-        ("${", "}"),
-    ];
+    let pairs: &[(&str, &str)] = &[("{{", "}}"), ("{%", "%}"), ("<%", "%>"), ("${", "}")];
 
     for &(open, close) in pairs {
         let mut pos = 0;
@@ -404,12 +396,7 @@ fn scan_for_variables_and_fields(
     }
 
     // Scan for standard variable patterns
-    let pairs: &[(&str, &str)] = &[
-        ("${", "}"),
-        ("{{", "}}"),
-        ("{%", "%}"),
-        ("<%", "%>"),
-    ];
+    let pairs: &[(&str, &str)] = &[("${", "}"), ("{{", "}}"), ("{%", "%}"), ("<%", "%>")];
     for &(open, close) in pairs {
         let mut pos = 0;
         while let Some(rel) = text[pos..].find(open) {
@@ -434,12 +421,7 @@ fn scan_for_variables_and_fields(
 /// Extract the first variable pattern found in a text fragment.
 #[allow(dead_code)]
 fn extract_variable_pattern(text: &str) -> Option<String> {
-    let pairs: &[(&str, &str)] = &[
-        ("${", "}"),
-        ("{{", "}}"),
-        ("{%", "%}"),
-        ("<%", "%>"),
-    ];
+    let pairs: &[(&str, &str)] = &[("${", "}"), ("{{", "}}"), ("{%", "%}"), ("<%", "%>")];
     for &(open, close) in pairs {
         if let Some(start_idx) = text.find(open) {
             let content_start = start_idx + open.len();
@@ -457,19 +439,38 @@ fn extract_variable_pattern(text: &str) -> Option<String> {
 fn is_sensitive_field_name(field: &str) -> bool {
     let lower = field.to_lowercase();
     const SENSITIVE: &[&str] = &[
-        "api_key", "apikey", "api-key",
+        "api_key",
+        "apikey",
+        "api-key",
         "secret",
-        "password", "passwd", "pwd",
+        "password",
+        "passwd",
+        "pwd",
         "token",
         "auth",
         "credential",
-        "private_key", "privatekey", "private-key",
-        "access_key", "accesskey", "access-key",
-        "aws_key", "awskey", "aws-key",
-        "db_password", "dbpassword", "db-password",
-        "ssh_key", "sshkey", "ssh-key",
-        "oauth", "bearer", "jwt",
-        "session", "cookie", "hmac", "signature",
+        "private_key",
+        "privatekey",
+        "private-key",
+        "access_key",
+        "accesskey",
+        "access-key",
+        "aws_key",
+        "awskey",
+        "aws-key",
+        "db_password",
+        "dbpassword",
+        "db-password",
+        "ssh_key",
+        "sshkey",
+        "ssh-key",
+        "oauth",
+        "bearer",
+        "jwt",
+        "session",
+        "cookie",
+        "hmac",
+        "signature",
     ];
     SENSITIVE.iter().any(|kw| lower.contains(kw))
 }
@@ -501,8 +502,14 @@ mod tests {
         let metadata = detect_structured_input(&input);
         assert!(metadata.is_some());
         let m = metadata.expect("metadata should be present in test");
-        assert!(!m.sensitive_field_names.is_empty(), "api_key and secret should be detected");
-        assert!(m.has_variable_refs, "s{{...}} patterns should be detected as variable refs");
+        assert!(
+            !m.sensitive_field_names.is_empty(),
+            "api_key and secret should be detected"
+        );
+        assert!(
+            m.has_variable_refs,
+            "s{{...}} patterns should be detected as variable refs"
+        );
         assert_eq!(m.variable_patterns.len(), 2);
     }
 
@@ -523,7 +530,10 @@ mod tests {
         // is_likely_template detects "s{UPPERCASE}" via has_normalised_dollar_var().
         let input = make_input("API endpoint: ${API_URL}, key: ${API_KEY}");
         let metadata = detect_structured_input(&input);
-        assert!(metadata.is_some(), "normalised s{{...}} should be detected as template");
+        assert!(
+            metadata.is_some(),
+            "normalised s{{...}} should be detected as template"
+        );
         let m = metadata.expect("metadata should be present in test");
         assert_eq!(m.format, StructuredFormat::Template);
         assert!(m.has_variable_refs);
