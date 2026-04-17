@@ -49,6 +49,7 @@ fn test_payload_fragmentation_session() {
 #[test]
 fn test_topic_drift_escalation() {
     let session_id = "attacker-session-drift";
+    let _ = firewall_core::init();
     firewall_core::session::init_session_manager();
     
     // Step 1: Normal intent (QuestionFactual)
@@ -68,6 +69,7 @@ fn test_topic_drift_escalation() {
 }
 
 #[test]
+#[cfg(feature = "semantic")]
 fn test_bert_engine_active_flag() {
     // Testing if BERT mode is actually active when configured
     let session_id = "bert-check-session";

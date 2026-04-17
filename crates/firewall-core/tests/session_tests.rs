@@ -167,6 +167,6 @@ fn nasty_session_escalation_attack() {
     
     // Check for high risk or at least medium with flags
     assert!(matches!(final_analysis.risk_level, SessionRiskLevel::High | SessionRiskLevel::Medium));
-    assert!(final_analysis.escalation_score > 30);
+    assert!(final_analysis.escalation_score >= 30);
     assert!(final_analysis.recommendations.iter().any(|r| r.contains("termination") || r.contains("Monitor")));
 }

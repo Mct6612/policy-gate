@@ -20,6 +20,7 @@ pub struct SessionContext {
     pub last_activity_ns: u128,
     pub escalation_score: u8,
     pub fragmentation_detected: bool,
+    pub topic_drift_detected: bool,
 }
 
 /// Individual message in session context.
@@ -105,6 +106,7 @@ impl SessionManager {
                 last_activity_ns: now,
                 escalation_score: 0,
                 fragmentation_detected: false,
+                topic_drift_detected: false,
             });
 
         // Update activity timestamp
@@ -193,6 +195,12 @@ impl SessionManager {
             msg.escalation_indicators
                 .contains(&EscalationIndicator::PayloadFragmentation)
         });
+
+        // Detect topic drift
+        session.topic_drift_detected = session.messages.iter().any(|msg| {
+            msg.escalation_indicators
+                .contains(&EscalationIndicator::TopicDrift)
+        });
     }
 
     /// Generate analysis
@@ -213,6 +221,11 @@ impl SessionManager {
             flags.push(SessionFlag::FragmentationDetected);
         }
 
+        // Topic drift detected
+        if session.topic_drift_detected {
+            flags.push(SessionFlag::TopicDriftDetected);
+        }
+
         // Rapid escalation (score increased significantly in last 3 messages)
         if self.is_rapid_escalation(session) {
             flags.push(SessionFlag::RapidEscalation);
@@ -229,6 +242,7 @@ impl SessionManager {
                 SessionRiskLevel::High
             } else if session.escalation_score >= 40
                 || flags.contains(&SessionFlag::FragmentationDetected)
+                || flags.contains(&SessionFlag::TopicDriftDetected)
             {
                 SessionRiskLevel::Medium
             } else {
@@ -370,8 +384,12 @@ impl SessionManager {
                 MatchedIntent::QuestionFactual
                 | MatchedIntent::QuestionCausal
                 | MatchedIntent::QuestionComparative => {
-                    // Was asking factual questions; drift if now requesting code.
-                    is_code_request && !is_factual_question
+                    // Was asking factual questions; drift if now requesting code or
+                    // accessing sensitive system paths (e.g. /etc/shadow, /proc/...).
+                    let is_system_access = ["/etc/", "/proc/", "/sys/", "/root/", "/var/log/"]
+                        .iter()
+                        .any(|kw| lower.contains(kw));
+                    (is_code_request || is_system_access) && !is_factual_question
                 }
                 _ => false,
             }
@@ -500,6 +518,9 @@ impl SessionManager {
                 SessionFlag::FragmentationDetected => {
                     recommendations.push("Potential payload fragmentation detected".to_string());
                 }
+                SessionFlag::TopicDriftDetected => {
+                    recommendations.push("Abrupt topic drift detected — possible intent masking".to_string());
+                }
                 SessionFlag::RapidEscalation => {
                     recommendations.push("Rapid escalation pattern detected".to_string());
                 }
@@ -548,6 +569,7 @@ pub enum SessionRiskLevel {
 pub enum SessionFlag {
     HighEscalationScore,
     FragmentationDetected,
+    TopicDriftDetected,
     RapidEscalation,
     LongSession,
 }
