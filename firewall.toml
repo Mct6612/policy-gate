@@ -1,8 +1,119 @@
-# policy-gate Configuration
-# Active Mode: BERT Semantic Engine
+# firewall.example.toml — Example configuration for policy-gate
+#
+# Copy to firewall.toml in your working directory to customize the allowlist
+# and forbidden-keyword tables without modifying the firewall-core crate.
+# Or place in a tenants/ directory (e.g., tenants/tenant-a.toml) when using
+# the multi-tenant registry.
+#
+# Safety note: All intent patterns defined here are loaded during init() and
+# validated (regex compile check + Z3 tripwire). A broken regex or pattern
+# count mismatch causes init() to return Err — the firewall will not start.
 
-engine_mode = "bert"
-model_path = "models/all-MiniLM-L6-v2.onnx"
-tokenizer_path = "models/tokenizer.json"
-semantic_threshold = 0.70
-semantic_enforce_threshold = 0.95
+# ─── Multi-Tenant Configuration (Pillar 5) ────────────────────────────────────
+
+# Optional tenant ID for diagnostic traceability and isolation.
+# tenant_id = "tenant-a"
+
+# If false (default), requests without a valid tenant ID are rejected.
+# allow_anonymous_tenants = false
+
+# Optional list of permitted intents for this configuration (multi-tenant profile).
+# If omitted, all matched intents are permitted by default.
+# permitted_intents = ["QuestionFactual", "TaskCodeGeneration"]
+
+# ─── Content Filtering ────────────────────────────────────────────────────────
+
+# Optional list of additional forbidden keywords.
+# These are checked in BOTH safety channels (Channel A and Channel B).
+# forbidden_keywords = ["internal-api-key", "secret-key-123"]
+
+# ─── Custom Intent Patterns ───────────────────────────────────────────────────
+# Use IP-2xx range for custom intents.
+
+# [[intents]]
+# id     = "IP-200"
+# intent = "QuestionFactual"
+# regex  = "(?i)\\b(diagnose|symptoms of|treatment for)\\b.{0,200}\\?"
+
+# [[intents]]
+# id     = "IP-201"
+# intent = "TaskCodeGeneration"
+# regex  = "(?i)\\b(refactor|optimise|optimize|debug)\\b.{0,80}\\b(function|class|module)\\b"
+
+# ─── Operational Controls ─────────────────────────────────────────────────────
+
+# Lookback window for contextual evaluation (Red-Team Strategy 3).
+# Default is 3 if not specified.
+# context_window = 3
+
+# Shadow Mode: evaluates inputs but allows them to pass even if blocked.
+# shadow_mode = false
+
+# Audit detail level: "basic" (default) or "detailed" (for side-by-side analysis).
+# audit_detail_level = "basic"
+
+# Voter policy for DiagnosticAgreement events (both channels Pass, but disagree on intent).
+#
+#   pass_and_log  — (default) allow the request through and queue for operator review (SR-008).
+#   fail_closed   — escalate to a hard Block. Recommended for high-sensitivity tenants
+#                   (e.g. financial data, PII, healthcare) where any intent ambiguity is
+#                   unacceptable. Note: increases false-positive rate; review your intent
+#                   patterns before enabling.
+#
+# on_diagnostic_agreement = "pass_and_log"
+
+# ── High-sensitivity tenant example ──────────────────────────────────────────
+# Uncomment the block below for a finance or PII-heavy tenant profile:
+#
+# tenant_id = "finance-prod"
+# allow_anonymous_tenants = false
+# on_diagnostic_agreement = "fail_closed"
+# audit_detail_level = "detailed"
+# semantic_enforce_threshold = 0.85
+
+# ─── Streaming Egress (Pillar 6 — experimental) ───────────────────────────────
+#
+# Requires proxy compiled with --features streaming-egress.
+# When false (default), requests with "stream: true" are rejected with HTTP 400.
+# When true, the proxy applies streaming egress scanning via Aho-Corasick.
+#
+# WARNING: This is an experimental feature. The fail-closed guarantee applies
+# at the chunk boundary level (overlap buffer size: 256 bytes). Patterns longer
+# than 127 bytes will not be reliably detected across chunk boundaries.
+#
+# streaming_egress_enabled = false
+# streaming_egress_final_check = true
+
+
+# ─── Tool-Schema Validation (AgenticToolUse Enhancement) ───────────────────────
+#
+# Optional whitelist of allowed tool names for AgenticToolUse validation.
+# When specified, only these tools may be invoked. Tool calls to other tools
+# result in a Block with reason `ToolNotAllowed`.
+#
+# Example for a research agent:
+# allowed_tools = ["search_tool", "calculator_tool", "weather_tool"]
+#
+# Example for a code assistant:
+# allowed_tools = ["code_executor", "linter_tool", "debugger_tool"]
+#
+# If omitted or empty, all tools are permitted (backward compatible).
+#
+# allowed_tools = []
+
+
+# ─── Semantic Analysis (Channel D - Feature: semantic) ─────────────────────────
+
+# semantic_engine_mode = "fast"     # "fast" (default, deterministic) or "bert" (ML-based).
+# semantic_threshold = 0.70         # Similarity score to trigger advisory tagging.
+# semantic_enforce_threshold = 0.95  # default: 0.95 (set to 1.0 to effectively disable)
+# model_path = "models/all-MiniLM-L6-v2.onnx"
+# tokenizer_path = "models/tokenizer.json"
+
+# ─── Notes ────────────────────────────────────────────────────────────────────
+#
+# • The built-in 12 patterns (IP-001 … IP-099) are always loaded first.
+# • Custom patterns are NOT verified by Z3 — the operator is fully responsible
+#   for the security properties of custom patterns.
+# • To reload configurations in a multi-tenant environment, call:
+#   init_multi_tenant_registry(token, "/etc/policy-gate/tenants/")
