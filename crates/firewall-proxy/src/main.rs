@@ -41,14 +41,23 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+#[cfg(not(feature = "streaming-egress"))]
 use metrics::{counter, histogram};
+#[cfg(feature = "streaming-egress")]
+use metrics::counter;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use reqwest::{header::HeaderMap, Client};
-use serde_json::{json, Value};
+#[cfg(not(feature = "streaming-egress"))]
+use reqwest::header::HeaderMap;
+use reqwest::Client;
+#[cfg(not(feature = "streaming-egress"))]
+use serde_json::Value;
+use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
+#[cfg(not(feature = "streaming-egress"))]
 use std::time::Instant;
 
+#[cfg(not(feature = "streaming-egress"))]
 use firewall_core::{evaluate_for_tenant, evaluate_output_for_tenant, next_sequence, PromptInput};
 use tokio::net::TcpListener;
 use tokio::time::{interval, Duration};
