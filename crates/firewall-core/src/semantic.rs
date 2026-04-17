@@ -13,7 +13,7 @@ use std::time::Instant;
 #[cfg(feature = "semantic-bert")]
 use std::sync::OnceLock;
 
-// Include generated centroids (16 clusters, 128 dimensions)
+// Include generated centroids (8 clusters, 128 dimensions)
 #[path = "semantic_generated.rs"]
 mod semantic_generated;
 pub use semantic_generated::{ATTACK_CENTROIDS, CENTROID_DIMENSIONS, EXPECTED_CENTROID_HASH};

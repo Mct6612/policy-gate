@@ -70,6 +70,34 @@ pub fn get_current_config() -> Option<ConfigSnapshot> {
         .and_then(|lock| lock.read().ok().map(|guard| guard.clone()))
 }
 
+/// SR-025: Tool-Schema Validation.
+///
+/// Returns Ok(()) if:
+/// - No whitelist (allowed_tools) is configured.
+/// - All tool_names are present in the whitelist.
+///
+/// Returns Err(BlockReason::ToolNotAllowed) if any tool is rejected.
+pub fn validate_tools(tool_names: &[String]) -> Result<(), crate::types::BlockReason> {
+    let config_opt = get_current_config();
+    let allowed_opt = config_opt
+        .as_ref()
+        .and_then(|snap| snap.config.allowed_tools.as_ref());
+
+    if let Some(allowed) = allowed_opt {
+        let allowed_set: std::collections::HashSet<&String> = allowed.iter().collect();
+        for tool in tool_names {
+            if !allowed_set.contains(tool) {
+                return Err(crate::types::BlockReason::ToolNotAllowed {
+                    tool_name: tool.clone(),
+                    allowed_tools: allowed.clone(),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Attempt to reload configuration from firewall.toml.
 /// Returns Ok(true) if config was reloaded, Ok(false) if no changes detected,
 /// or Err if the new config is invalid (old config remains active).

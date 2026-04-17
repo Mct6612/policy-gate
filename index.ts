@@ -282,6 +282,23 @@ export class Firewall {
   }
 
   /**
+   * SR-025: Validate that all given tool names are on the allowed_tools whitelist.
+   *
+   * Returns `{ isValid: true }` when all tools are permitted or when `allowed_tools`
+   * is not configured (backward-compatible: unconfigured = all tools permitted).
+   * Returns `{ isValid: false, blockReason: "ToolNotAllowed:…" }` otherwise.
+   *
+   * Requires firewall to be initialised (OC-01).
+   */
+  validateTools(toolNames: string[]): ToolValidationResult {
+    const raw = this.native.validateTools(toolNames);
+    return {
+      isValid: raw.isValid,
+      blockReason: raw.isValid ? undefined : raw.blockReason,
+    };
+  }
+
+  /**
    * Evaluate an LLM response against the original prompt to detect leakage/PII.
    */
   async evaluateOutput(
@@ -343,6 +360,7 @@ interface NativeFirewall {
     response: string,
     sequence: string,
   ): Promise<RawEgressVerdict>;
+  validateTools(toolNames: string[]): RawToolValidationResult;
 }
 
 interface RawVerdict {
@@ -381,6 +399,18 @@ interface RawEgressVerdict {
   sequence: string;
 }
 
+interface RawToolValidationResult {
+  isValid: boolean;
+  blockReason: string;
+}
+
+export interface ToolValidationResult {
+  /** True iff all supplied tool names are permitted by the active allowed_tools config. */
+  isValid: boolean;
+  /** Populated when isValid is false — stable BlockReason string. */
+  blockReason?: string;
+}
+
 async function loadNative(): Promise<NativeFirewall> {
   // napi-rs generates this binding automatically from Cargo.toml.
   // During development, fall back to a mock if the native module isn't compiled yet.
@@ -397,6 +427,7 @@ async function loadNative(): Promise<NativeFirewall> {
         : native.firewallEvaluateForTenant.bind(native),
       evaluateMessages: native.firewallEvaluateMessages.bind(native),
       evaluateOutput: native.firewallEvaluateOutput.bind(native),
+      validateTools: native.firewallValidateTools.bind(native),
     };
   } catch {
     console.warn("[firewall] Native module not found — using development stub");
@@ -567,6 +598,10 @@ function devStub(): NativeFirewall {
   return {
     init: () => null,
     initMultiTenantRegistry: () => null,
+    validateTools: (toolNames: string[]) => ({
+      isValid: true,
+      blockReason: "",
+    }),
     evaluate: async (input) => {
       const passPatterns = [
         /\?$/,

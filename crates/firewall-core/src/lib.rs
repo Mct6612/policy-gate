@@ -391,6 +391,20 @@ pub fn get_review_stats() -> ReviewStats {
     review::get_review_stats()
 }
 
+/// SR-025: Tool-Schema Validation.
+///
+/// Validates that all tool names in `tool_names` are on the `allowed_tools`
+/// whitelist of the currently active (default) configuration.
+/// Returns `Ok(())` if all tools are permitted, or `Err(BlockReason::ToolNotAllowed)`
+/// if any tool is not on the whitelist.
+///
+/// Returns `Ok(())` without checking if `allowed_tools` is not configured
+/// (backward-compatible: unconfigured = all tools permitted).
+pub fn validate_tools(tool_names: &[String]) -> Result<(), BlockReason> {
+    config_watcher::validate_tools(tool_names)
+}
+
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

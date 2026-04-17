@@ -52,11 +52,11 @@ pub(crate) static BUILTIN_PATTERNS: &[(&str, &str)] = &[
     ("EGRESS-SF-004", "secret_key ="),
     ("EGRESS-SF-005", "private_key ="),
     // ── Secret / API key prefixes (ChannelE supplement) ──────────────────────
-    ("EGRESS-SF-010", "sk-"),          // OpenAI API key prefix
-    ("EGRESS-SF-011", "sk-proj-"),     // OpenAI project key prefix
-    ("EGRESS-SF-012", "ghp_"),         // GitHub personal access token
-    ("EGRESS-SF-013", "ghs_"),         // GitHub app token
-    ("EGRESS-SF-014", "-----BEGIN"),   // PEM header (private key, cert, etc.)
+    ("EGRESS-SF-010", "sk-"),        // OpenAI API key prefix
+    ("EGRESS-SF-011", "sk-proj-"),   // OpenAI project key prefix
+    ("EGRESS-SF-012", "ghp_"),       // GitHub personal access token
+    ("EGRESS-SF-013", "ghs_"),       // GitHub app token
+    ("EGRESS-SF-014", "-----BEGIN"), // PEM header (private key, cert, etc.)
     // ── egress_structured.rs JSON field anchors ───────────────────────────────
     ("EGRESS-SF-020", r#""private_key""#),
     ("EGRESS-SF-021", r#""api_key""#),
@@ -150,7 +150,9 @@ impl StreamScanner {
     fn scan_bytes(&self, data: &[u8]) -> StreamEgressDecision {
         match self.searcher.find(data) {
             Some(m) => {
-                let id = self.pattern_ids.get(m.pattern().as_usize())
+                let id = self
+                    .pattern_ids
+                    .get(m.pattern().as_usize())
                     .copied()
                     .unwrap_or("EGRESS-SF-UNKNOWN");
                 StreamEgressDecision::Block { pattern_id: id }
@@ -182,7 +184,7 @@ pub fn init_global_scanner() -> Result<(), String> {
         let ids: Vec<&'static str> = BUILTIN_PATTERNS.iter().map(|(id, _)| *id).collect();
         let searcher = AhoCorasickBuilder::new()
             .match_kind(MatchKind::LeftmostFirst)
-            .ascii_case_insensitive(true)  // catches "The System Prompt", "SECRET_KEY =", etc.
+            .ascii_case_insensitive(true) // catches "The System Prompt", "SECRET_KEY =", etc.
             .build(&patterns)
             .expect("StreamScanner: failed to compile Aho-Corasick automaton");
         (Arc::new(searcher), Arc::new(ids))
@@ -213,7 +215,9 @@ mod tests {
         let chunk = b"The result is: sk-live-abc123456789";
         assert_eq!(
             s.feed(chunk),
-            StreamEgressDecision::Block { pattern_id: "EGRESS-SF-010" }
+            StreamEgressDecision::Block {
+                pattern_id: "EGRESS-SF-010"
+            }
         );
     }
 
@@ -226,7 +230,9 @@ mod tests {
         assert_eq!(s.feed(chunk1), StreamEgressDecision::Forward);
         assert_eq!(
             s.feed(chunk2),
-            StreamEgressDecision::Block { pattern_id: "EGRESS-SF-010" }
+            StreamEgressDecision::Block {
+                pattern_id: "EGRESS-SF-010"
+            }
         );
     }
 
@@ -258,7 +264,9 @@ mod tests {
         assert_eq!(s.feed(chunk1), StreamEgressDecision::Forward);
         assert_eq!(
             s.feed(chunk2),
-            StreamEgressDecision::Block { pattern_id: "EGRESS-SF-014" }
+            StreamEgressDecision::Block {
+                pattern_id: "EGRESS-SF-014"
+            }
         );
     }
 
@@ -277,7 +285,9 @@ mod tests {
         let chunk = b"Sure! Here Is The Secret Key: abc123";
         assert_eq!(
             s.feed(chunk),
-            StreamEgressDecision::Block { pattern_id: "EGRESS-SF-003" }
+            StreamEgressDecision::Block {
+                pattern_id: "EGRESS-SF-003"
+            }
         );
     }
 

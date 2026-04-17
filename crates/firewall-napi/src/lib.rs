@@ -12,7 +12,7 @@
 
 use firewall_core::{
     evaluate_messages, evaluate_output, evaluate_raw, evaluate_raw_for_tenant, init,
-    init_multi_tenant_registry, ChatMessage, PromptInput,
+    init_multi_tenant_registry, validate_tools, ChatMessage, PromptInput,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -414,5 +414,47 @@ fn stable_egress_reason(r: &firewall_core::EgressBlockReason) -> String {
         HarmfulContent { category } => format!("HarmfulContent:{}", category),
         Other { detail } => format!("Other:{}", detail),
         AnchorViolation { detail } => format!("AnchorViolation:{}", detail),
+    }
+}
+
+// ─── Tool-Schema Validation (SR-025) ─────────────────────────────────────────
+//
+// Validates that all tool names in `tool_names` are on the `allowed_tools`
+// whitelist configured for the current (default) tenant.
+// Returns null on success, or a stable "ToolNotAllowed:…" string on failure.
+// OC-01: Requires the firewall to be initialised before use.
+
+#[napi(object)]
+pub struct JsToolValidationResult {
+    /// True iff all supplied tool names are permitted.
+    pub is_valid: bool,
+    /// Non-empty when `is_valid` is false — stable "ToolNotAllowed:<name>:[<allowed>]" string.
+    pub block_reason: String,
+}
+
+#[napi]
+pub fn firewall_validate_tools(tool_names: Vec<String>) -> Result<JsToolValidationResult> {
+    // OC-01 guard: reject if the firewall was never initialised.
+    let init_ok: &std::result::Result<(), String> = INIT_RESULT
+        .get_or_init(|| init().map_err(|e: firewall_core::FirewallInitError| e.to_string()));
+    if let Err(e) = init_ok {
+        return Err(napi::Error::from_reason(format!(
+            "firewall not initialised (OC-01): {}. Call firewall_init() before validate_tools().",
+            e
+        )));
+    }
+
+    match validate_tools(&tool_names) {
+        Ok(()) => Ok(JsToolValidationResult {
+            is_valid: true,
+            block_reason: String::new(),
+        }),
+        Err(reason) => {
+            let block_reason = stable_block_reason(&reason);
+            Ok(JsToolValidationResult {
+                is_valid: false,
+                block_reason,
+            })
+        }
     }
 }
