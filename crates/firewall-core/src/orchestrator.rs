@@ -115,17 +115,17 @@ pub(crate) fn evaluate(
 
     // Pillar 5: Fail-Closed for unknown or unauthorized tenants.
     if config.is_none() {
-        return unknown_tenant_block(&input, sequence, start_ns, tenant_id.map(|s| s.to_string()));
+        return unknown_tenant_block(input, sequence, start_ns, tenant_id.map(|s| s.to_string()));
     }
 
     // If no specific tenant provided, only allow access if anonymous is enabled (or not explicitly disabled) in the default policy.
     if tenant_id.is_none() && config.as_ref().and_then(|c| c.allow_anonymous_tenants) == Some(false)
     {
-        return unknown_tenant_block(&input, sequence, start_ns, None);
+        return unknown_tenant_block(input, sequence, start_ns, None);
     }
 
-    let mut channel_a = ChannelA::evaluate(&input, config.as_ref());
-    let mut channel_b = ChannelB::evaluate(&input, config.as_ref());
+    let mut channel_a = ChannelA::evaluate(input, config.as_ref());
+    let mut channel_b = ChannelB::evaluate(input, config.as_ref());
 
     #[cfg(feature = "semantic")]
     let (s_tag, s_enf, s_mode) = config
@@ -220,7 +220,7 @@ pub(crate) fn evaluate(
     let total_us = ((decided_ns - start_ns) / 1_000).min(u64::MAX as u128) as u64;
 
     build_final_verdict(
-        &input,
+        input,
         sequence,
         verdict_kind,
         advisory_tag,

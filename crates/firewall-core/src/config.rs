@@ -400,8 +400,8 @@ static CURRENT_CONFIG: OnceLock<FirewallConfig> = OnceLock::new();
 
 /// Sets the global configuration. Called during init() and hot-reloads.
 /// Returns Err if the config was already set (should not happen in normal operation).
-pub fn set_global_config(config: FirewallConfig) -> Result<(), FirewallConfig> {
-    CURRENT_CONFIG.set(config)
+pub fn set_global_config(config: FirewallConfig) -> Result<(), Box<FirewallConfig>> {
+    CURRENT_CONFIG.set(config).map_err(Box::new)
 }
 
 /// Gets the current global configuration, if one has been set.

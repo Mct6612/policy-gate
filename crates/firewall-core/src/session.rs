@@ -329,7 +329,7 @@ impl SessionManager {
             .take(3) // Last 3 messages
             .map(|msg| msg.input_text.len())
             .sum::<usize>()
-            / previous_messages.len().min(3).max(1);
+            / previous_messages.len().clamp(1, 3);
 
         let current_length = text.len();
         current_length > (avg_prev_length * 15) / 10 // 50% increase

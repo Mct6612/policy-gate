@@ -13,8 +13,10 @@ pub struct StructuredScanResult {
     /// Type of sensitive data found
     pub data_type: &'static str,
     /// Field name where it was found
+    #[allow(dead_code)]
     pub field_name: String,
     /// Snippet of the value (truncated for safety)
+    #[allow(dead_code)]
     pub value_snippet: String,
 }
 

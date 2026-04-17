@@ -76,7 +76,7 @@ impl IntentPattern {
     pub fn matches(&self, input: &str) -> bool {
         let re = self.compiled.get_or_init(|| {
             Regex::new(&self.regex_src)
-                .expect(&format!("Safety-critical regex compile failure [{}]", self.id))
+                .unwrap_or_else(|_| panic!("Safety-critical regex compile failure [{}]", self.id))
         });
         if !re.is_match(input) {
             return false;
@@ -101,7 +101,7 @@ impl IntentPattern {
         // get_or_init compiles and caches the Regex. The match result is irrelevant.
         let re = self.compiled.get_or_init(|| {
             Regex::new(&self.regex_src)
-                .expect(&format!("Safety-critical regex compile failure [{}]", self.id))
+                .unwrap_or_else(|_| panic!("Safety-critical regex compile failure [{}]", self.id))
         });
         let _ = re.is_match("");
     }
